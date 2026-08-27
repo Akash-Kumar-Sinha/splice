@@ -3,3 +3,4 @@
 /.agents
 **tests**
 .env
+.media_store/

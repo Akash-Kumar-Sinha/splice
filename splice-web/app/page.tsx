@@ -1,4 +1,5 @@
-import HistoryPanel, { Commit } from '@/components/HistoryPanel';
+import AppWorkspace from '@/components/AppWorkspace';
+import { Commit } from '@/components/HistoryPanel';
 
 async function getCommits(): Promise<Commit[]> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -18,5 +19,5 @@ async function getCommits(): Promise<Commit[]> {
 export default async function Page() {
   const commits = await getCommits();
 
-  return <HistoryPanel initialCommits={commits} />;
+  return <AppWorkspace initialCommits={commits} />;
 }

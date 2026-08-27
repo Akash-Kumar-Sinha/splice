@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::error::StoreError;
 use crate::hash::MediaHash;
 
-pub trait MediaStore {
+pub trait MediaStore: Send + Sync {
     fn ingest(&self, path: &Path) -> Result<MediaHash, StoreError>;
     fn resolve(&self, hash: &MediaHash) -> Option<PathBuf>;
     fn contains(&self, hash: &MediaHash) -> bool;
