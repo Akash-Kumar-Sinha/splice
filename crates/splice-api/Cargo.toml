@@ -6,9 +6,11 @@ authors.workspace = true
 
 [dependencies]
 splice-commit.workspace = true
+splice-diff.workspace = true
 splice-media.workspace = true
 splice-render.workspace = true
 axum.workspace = true
+
 
 tokio.workspace = true
 tower.workspace = true

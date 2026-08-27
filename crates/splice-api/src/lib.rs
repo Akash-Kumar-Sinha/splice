@@ -15,6 +15,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use splice_commit::{Commit, CommitId, CommitStore, StoreError, Tag};
+use splice_diff::TimelineDiff;
 use splice_media::{MediaHash, MediaStore};
 use splice_render::{
     FfmpegThumbnailer, FsThumbnailCache, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
@@ -90,6 +91,18 @@ pub struct RevertPayload {
     pub mode: Option<RevertMode>,
     #[serde(default)]
     pub uncommitted_changes: Option<NewCommitRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffQuery {
+    pub from: CommitId,
+    pub to: CommitId,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DiffTimelinePayload {
+    pub timeline_a: splice_commit::Timeline,
+    pub timeline_b: splice_commit::Timeline,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +235,27 @@ pub async fn create_commit(
     }
 
     Ok((StatusCode::CREATED, Json(id)))
+}
+
+pub async fn get_commits_diff(
+    State(state): State<AppState>,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<TimelineDiff>, ApiError> {
+    let commit_a = state.commit_store.get(&query.from)?;
+    let commit_b = state.commit_store.get(&query.to)?;
+
+    let tl_a = splice_commit::Timeline::from_commit(&commit_a);
+    let tl_b = splice_commit::Timeline::from_commit(&commit_b);
+
+    let diff = splice_diff::diff(&tl_a, &tl_b);
+    Ok(Json(diff))
+}
+
+pub async fn compute_timeline_diff(
+    Json(payload): Json<DiffTimelinePayload>,
+) -> Result<Json<TimelineDiff>, ApiError> {
+    let diff = splice_diff::diff(&payload.timeline_a, &payload.timeline_b);
+    Ok(Json(diff))
 }
 
 pub async fn revert(
@@ -435,6 +469,8 @@ pub fn router(
 
     Router::new()
         .route("/commits", get(list_commits).post(create_commit))
+        .route("/commits/diff", get(get_commits_diff))
+        .route("/diff", post(compute_timeline_diff))
         .route("/commits/:id/revert", post(revert))
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
         .route("/commits/:id/tags", post(add_commit_tag))

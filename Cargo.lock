@@ -848,6 +848,7 @@ dependencies = [
  "serde",
  "serde_json",
  "splice-commit",
+ "splice-diff",
  "splice-media",
  "splice-render",
  "tempfile",
@@ -873,6 +874,19 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "splice-diff"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "splice-commit",
+ "splice-media",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

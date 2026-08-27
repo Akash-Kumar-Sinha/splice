@@ -17,7 +17,9 @@ import {
   IconVolumeOff,
   IconZoomIn,
   IconScissors,
+  IconSparkles,
 } from '@tabler/icons-react';
+
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -466,11 +468,41 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
             placeholder="Commit snapshot message..."
             className="w-64 font-mono text-xs"
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (primaryTrack.clips.length === 0) {
+                setCommitMessage('Empty timeline');
+                return;
+              }
+              const first = primaryTrack.clips[0];
+              const dur = first.out_point - first.in_point;
+              if (primaryTrack.clips.length === 1) {
+                if (first.original_duration && Math.abs(dur - first.original_duration) > 0.05) {
+                  const trimAmount = first.original_duration - dur;
+                  setCommitMessage(`Trimmed ${first.name} by ${trimAmount.toFixed(1)}s`);
+                } else {
+                  setCommitMessage(`Timeline: ${first.name} (${dur.toFixed(1)}s)`);
+                }
+              } else {
+                setCommitMessage(
+                  `Multi-clip edit: ${primaryTrack.clips.length} clips (${primaryTrack.clips[0].name}, ${primaryTrack.clips[1].name}...)`
+                );
+              }
+            }}
+            title="Auto-generate smart commit note based on changes"
+            className="font-mono text-xs"
+          >
+            <IconSparkles data-icon="inline-start" />
+            Auto Note
+          </Button>
           <Button onClick={handleSaveCommit} size="sm" variant="default">
             <IconDeviceFloppy data-icon="inline-start" />
             Save Commit Snapshot
           </Button>
         </div>
+
       </div>
 
       {saveStatus && (

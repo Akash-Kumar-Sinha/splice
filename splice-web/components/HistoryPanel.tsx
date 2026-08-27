@@ -15,6 +15,7 @@ import {
   IconTag,
   IconFilter,
   IconPlus,
+  IconGitCompare,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +36,7 @@ import {
   SidebarProvider,
   SidebarRail,
 } from '@/components/ui/sidebar';
+import DiffInspector from './DiffInspector';
 import { cn } from '@/lib/utils';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -113,6 +115,13 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
   const [newTagInput, setNewTagInput] = useState<string>('');
   const [showAddTagForId, setShowAddTagForId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'timeline' | 'json'>('timeline');
+  const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
+  const [diffBaseId, setDiffBaseId] = useState<string | null>(
+    initialCommits.length > 1 ? initialCommits[1].id : initialCommits[0]?.id || null
+  );
+  const [diffTargetId, setDiffTargetId] = useState<string | null>(
+    initialCommits.length > 0 ? initialCommits[0].id : null
+  );
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const fetchCommits = async () => {
@@ -201,13 +210,18 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
     }
   };
 
+  const handleOpenDiffWithCommit = (commitId: string) => {
+    setDiffBaseId(commitId);
+    setDiffTargetId(activeHeadId || commits[0]?.id || commitId);
+    setIsDiffMode(true);
+  };
+
   useEffect(() => {
     if (selectedCommitId) {
       handleSelectCommit(selectedCommitId, 'preview');
     }
   }, []);
 
-  // Collect all unique tags across commits
   const allUniqueTags = Array.from(new Set(commits.flatMap((c) => c.tags || [])));
 
   const filteredCommits = commits.filter((c) => {
@@ -243,9 +257,20 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                 <IconHistory className="size-4 text-primary" />
                 <span>Snapshots & Tags</span>
               </div>
-              <Badge variant="secondary" className="font-mono text-[10px]">
-                {filteredCommits.length} / {commits.length}
-              </Badge>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant={isDiffMode ? 'default' : 'outline'}
+                  size="xs"
+                  onClick={() => setIsDiffMode(!isDiffMode)}
+                  className="font-mono text-[10px] gap-1"
+                >
+                  <IconGitCompare className="size-3" />
+                  {isDiffMode ? 'Exit Diff' : 'Visual Diff'}
+                </Button>
+                <Badge variant="secondary" className="font-mono text-[10px]">
+                  {filteredCommits.length} / {commits.length}
+                </Badge>
+              </div>
             </div>
 
             {/* Search Input */}
@@ -270,7 +295,11 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                 }}
                 className="font-mono text-[10px]"
               >
-                {starredOnly ? <IconStarFilled className="size-3" /> : <IconStar className="size-3" />}
+                {starredOnly ? (
+                  <IconStarFilled className="size-3 text-amber-400" />
+                ) : (
+                  <IconStar className="size-3" />
+                )}
                 {starredOnly ? 'Tagged Only' : 'Show All'}
               </Button>
 
@@ -337,12 +366,20 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                       return (
                         <SidebarMenuItem key={commit.id}>
                           <div
-                            onClick={() => handleSelectCommit(commit.id, 'preview')}
+                            onClick={() => {
+                              if (isDiffMode) {
+                                setDiffBaseId(commit.id);
+                              } else {
+                                handleSelectCommit(commit.id, 'preview');
+                              }
+                            }}
                             className={cn(
                               'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-2 cursor-pointer relative',
-                              isSelected
+                              isSelected && !isDiffMode
                                 ? 'bg-card border-primary/60 shadow-sm'
-                                : 'bg-card/20 hover:bg-card/60 border-border/40'
+                                : 'bg-card/20 hover:bg-card/60 border-border/40',
+                              isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
+                              isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
                             )}
                           >
                             <div className="flex gap-2.5 items-start">
@@ -375,12 +412,22 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                                         HEAD
                                       </Badge>
                                     )}
-                                    {isSelected && !isHead && (
+                                    {isSelected && !isHead && !isDiffMode && (
                                       <Badge
                                         variant="secondary"
                                         className="font-mono text-[9px] px-1 py-0 text-primary"
                                       >
                                         PREVIEW
+                                      </Badge>
+                                    )}
+                                    {isDiffMode && diffBaseId === commit.id && (
+                                      <Badge variant="outline" className="text-[9px] border-amber-500 text-amber-300 px-1 py-0">
+                                        BASE (A)
+                                      </Badge>
+                                    )}
+                                    {isDiffMode && diffTargetId === commit.id && (
+                                      <Badge variant="default" className="text-[9px] px-1 py-0">
+                                        TARGET (B)
                                       </Badge>
                                     )}
                                   </div>
@@ -434,17 +481,31 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                               <span className="truncate max-w-[120px] flex items-center gap-1">
                                 <IconUser className="size-2.5" /> {commit.author}
                               </span>
-                              <Button
-                                variant="secondary"
-                                size="xs"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleSelectCommit(commit.id, 'restore');
-                                }}
-                              >
-                                <IconArrowBackUp data-icon="inline-start" />
-                                Restore
-                              </Button>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenDiffWithCommit(commit.id);
+                                  }}
+                                  title="Diff against HEAD"
+                                  className="h-5 px-1.5 text-[9px]"
+                                >
+                                  <IconGitCompare className="size-2.5" /> Diff
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSelectCommit(commit.id, 'restore');
+                                  }}
+                                >
+                                  <IconArrowBackUp data-icon="inline-start" />
+                                  Restore
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </SidebarMenuItem>
@@ -471,13 +532,22 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
           <SidebarRail />
         </Sidebar>
 
-        {/* Inset: Timeline Viewer & Details */}
+        {/* Inset: Timeline Viewer or Diff Inspector */}
         <SidebarInset className="flex-1 flex flex-col bg-background overflow-y-auto">
           {/* Top Bar inside Inset */}
           <header className="h-12 border-b border-border bg-card/40 px-6 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-              <IconHistory className="size-4 text-primary" />
-              <span>Snapshot Inspector</span>
+              {isDiffMode ? (
+                <>
+                  <IconGitCompare className="size-4 text-primary" />
+                  <span className="font-semibold text-foreground">Visual Diff Comparator</span>
+                </>
+              ) : (
+                <>
+                  <IconHistory className="size-4 text-primary" />
+                  <span>Snapshot Inspector</span>
+                </>
+              )}
               {statusMessage && (
                 <>
                   <Separator orientation="vertical" className="h-3" />
@@ -488,26 +558,50 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
 
             <div className="flex items-center gap-2">
               <Button
-                variant={activeTab === 'timeline' ? 'secondary' : 'ghost'}
+                variant={isDiffMode ? 'default' : 'outline'}
                 size="sm"
-                onClick={() => setActiveTab('timeline')}
+                onClick={() => setIsDiffMode(!isDiffMode)}
               >
-                <IconMovie data-icon="inline-start" />
-                Timeline View
+                <IconGitCompare data-icon="inline-start" />
+                {isDiffMode ? 'Exit Diff View' : 'Compare / Diff Saves'}
               </Button>
-              <Button
-                variant={activeTab === 'json' ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setActiveTab('json')}
-              >
-                <IconCode data-icon="inline-start" />
-                JSON
-              </Button>
+
+              {!isDiffMode && (
+                <>
+                  <Button
+                    variant={activeTab === 'timeline' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setActiveTab('timeline')}
+                  >
+                    <IconMovie data-icon="inline-start" />
+                    Timeline View
+                  </Button>
+                  <Button
+                    variant={activeTab === 'json' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setActiveTab('json')}
+                  >
+                    <IconCode data-icon="inline-start" />
+                    JSON
+                  </Button>
+                </>
+              )}
             </div>
           </header>
 
           <main className="flex-1 p-6 overflow-y-auto">
-            {loadingTimeline ? (
+            {isDiffMode ? (
+              <div className="max-w-4xl mx-auto">
+                <DiffInspector
+                  commits={commits}
+                  baseCommitId={diffBaseId}
+                  targetCommitId={diffTargetId}
+                  onSelectBase={setDiffBaseId}
+                  onSelectTarget={setDiffTargetId}
+                  onClose={() => setIsDiffMode(false)}
+                />
+              </div>
+            ) : loadingTimeline ? (
               <div className="h-full flex items-center justify-center">
                 <div className="flex items-center gap-3 text-muted-foreground font-mono text-sm">
                   <div className="size-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -558,13 +652,20 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                     </div>
 
                     <div className="flex items-center gap-3 self-start md:self-center">
+                      <Button
+                        variant="outline"
+                        onClick={() => handleOpenDiffWithCommit(timeline.commit_id)}
+                      >
+                        <IconGitCompare data-icon="inline-start" />
+                        Diff vs HEAD
+                      </Button>
                       {!timeline.is_head && (
                         <Button
                           onClick={() => handleSelectCommit(timeline.commit_id, 'restore')}
                           variant="default"
                         >
                           <IconArrowBackUp data-icon="inline-start" />
-                          One-Click Revert (Make HEAD)
+                          One-Click Revert
                         </Button>
                       )}
                     </div>

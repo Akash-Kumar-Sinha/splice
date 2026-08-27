@@ -89,6 +89,17 @@ impl Timeline {
         Self { tracks }
     }
 
+    pub fn from_commit(commit: &crate::commit::Commit) -> Self {
+        let mut clips = Vec::new();
+        let mut current_pos = Duration::ZERO;
+        for media_hash in &commit.media_refs {
+            let dur = Duration::from_secs(5);
+            clips.push(Clip::new(*media_hash, Duration::ZERO, dur, current_pos));
+            current_pos += dur;
+        }
+        Self::new(vec![Track::new(clips)])
+    }
+
     pub fn compute_hash(&self) -> MediaHash {
         let serialized = serde_json::to_vec(self).unwrap_or_default();
         MediaHash::compute(&serialized)
