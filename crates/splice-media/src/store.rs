@@ -9,7 +9,15 @@ pub trait MediaStore: Send + Sync {
     fn ingest(&self, path: &Path) -> Result<MediaHash, StoreError>;
     fn resolve(&self, hash: &MediaHash) -> Option<PathBuf>;
     fn contains(&self, hash: &MediaHash) -> bool;
+    fn delete(&self, hash: &MediaHash) -> Result<bool, StoreError>;
+    fn list_all_hashes(&self) -> Result<Vec<MediaHash>, StoreError>;
+    fn size_bytes(&self, hash: &MediaHash) -> Option<u64>;
+    fn total_size_bytes(&self) -> u64;
+    fn root_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
+
 
 #[derive(Debug, Clone)]
 pub struct FsMediaStore {
@@ -81,4 +89,59 @@ impl MediaStore for FsMediaStore {
     fn contains(&self, hash: &MediaHash) -> bool {
         self.resolve(hash).is_some()
     }
+
+    fn delete(&self, hash: &MediaHash) -> Result<bool, StoreError> {
+        let path = self.object_path(hash);
+        if path.is_file() {
+            fs::remove_file(&path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn list_all_hashes(&self) -> Result<Vec<MediaHash>, StoreError> {
+        let mut hashes = Vec::new();
+        if !self.root.exists() {
+            return Ok(hashes);
+        }
+
+        for prefix_entry in fs::read_dir(&self.root)? {
+            let prefix_entry = prefix_entry?;
+            if prefix_entry.file_type()?.is_dir() {
+                for file_entry in fs::read_dir(prefix_entry.path())? {
+                    let file_entry = file_entry?;
+                    let file_name = file_entry.file_name().to_string_lossy().to_string();
+                    if !file_name.starts_with('.') && file_entry.file_type()?.is_file() {
+                        if let Ok(hash) = MediaHash::from_hex(&file_name) {
+                            hashes.push(hash);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(hashes)
+    }
+
+    fn size_bytes(&self, hash: &MediaHash) -> Option<u64> {
+        let path = self.object_path(hash);
+        fs::metadata(path).ok().map(|m| m.len())
+    }
+
+    fn total_size_bytes(&self) -> u64 {
+        let mut total = 0;
+        if let Ok(hashes) = self.list_all_hashes() {
+            for h in hashes {
+                total += self.size_bytes(&h).unwrap_or(0);
+            }
+        }
+        total
+    }
+
+    fn root_path(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
 }
+
+

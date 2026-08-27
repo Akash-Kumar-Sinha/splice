@@ -3,8 +3,10 @@ members = [
     "crates/splice-api",
     "crates/splice-commit",
     "crates/splice-diff",
+    "crates/splice-gc",
     "crates/splice-media",
-    "crates/splice-render", "crates/splice-sync",
+    "crates/splice-render",
+    "crates/splice-sync",
 ]
 resolver = "3"
 
@@ -17,8 +19,10 @@ authors = ["Akash Kumar Sinha"]
 splice-media = { path = "crates/splice-media" }
 splice-commit = { path = "crates/splice-commit" }
 splice-diff = { path = "crates/splice-diff" }
+splice-gc = { path = "crates/splice-gc" }
 splice-render = { path = "crates/splice-render" }
 splice-sync = { path = "crates/splice-sync" }
+
 
 object_store = { version = "0.11", default-features = false, features = ["aws"] }
 async-trait = "0.1"

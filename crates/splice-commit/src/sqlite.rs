@@ -489,7 +489,52 @@ impl CommitStore for SqliteCommitStore {
             .optional()?;
         Ok(json)
     }
+
+    fn remove_commit(&self, id: &CommitId) -> Result<bool, StoreError> {
+        let count = self.remove_commits(&[*id])?;
+        Ok(count > 0)
+    }
+
+    fn remove_commits(&self, ids: &[CommitId]) -> Result<usize, StoreError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+        let mut total_deleted = 0;
+
+        for id in ids {
+            let id_str = id.to_string();
+
+            // INFO: Delete related tags, timeline states, and refs if pointing to this commit
+            {
+                let mut del_tags = tx.prepare_cached("DELETE FROM tags WHERE commit_id = ?1")?;
+                del_tags.execute(params![&id_str])?;
+            }
+            {
+                let mut del_timelines =
+                    tx.prepare_cached("DELETE FROM timelines WHERE commit_id = ?1")?;
+                del_timelines.execute(params![&id_str])?;
+            }
+            {
+                let mut del_refs =
+                    tx.prepare_cached("DELETE FROM refs WHERE commit_id = ?1")?;
+                del_refs.execute(params![&id_str])?;
+            }
+            {
+                let mut del_commit =
+                    tx.prepare_cached("DELETE FROM commits WHERE id = ?1")?;
+                let affected = del_commit.execute(params![&id_str])?;
+                total_deleted += affected;
+            }
+        }
+
+        tx.commit()?;
+        Ok(total_deleted)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -18,9 +18,10 @@ use splice_commit::{Commit, CommitId, CommitStore, CommitTreeNode, StoreError, T
 use splice_diff::TimelineDiff;
 use splice_media::{MediaHash, MediaStore};
 use splice_render::{
-    FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, LowResProxyRenderer, ProxyRenderer,
-    ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
+    FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, FullResExportRenderer,
+    LowResProxyRenderer, ProxyRenderer, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
 };
+
 use splice_sync::{S3RemoteStore, SyncEngine, SyncError, SyncStatusReport};
 
 use tempfile::NamedTempFile;
@@ -34,6 +35,10 @@ pub use timeline::{
     TimelineTrack,
 };
 
+pub use splice_render::{ExportFormat, ExportJob, ExportJobManager, JobId, JobStatus};
+pub use splice_gc::{GcError, GcReport, RetentionPolicy, collect_garbage, estimate_reclaimable};
+
+
 #[derive(Clone)]
 pub struct AppState {
     pub commit_store: Arc<dyn CommitStore>,
@@ -44,6 +49,7 @@ pub struct AppState {
     pub sync_engine: Arc<SyncEngine>,
     pub proxy_cache: FsProxyCache,
     pub proxy_renderer: Arc<dyn ProxyRenderer>,
+    pub export_manager: Arc<ExportJobManager>,
 }
 
 impl AppState {
@@ -103,6 +109,11 @@ impl AppState {
     ) -> Self {
         let thumbnail_queue =
             ThumbnailQueue::new(thumbnail_cache.clone(), thumbnail_generator.clone(), 64);
+        let media_root = media_store
+            .root_path()
+            .unwrap_or_else(|| std::path::PathBuf::from(".media_store"));
+        let export_renderer = Arc::new(FullResExportRenderer::new(media_root, ".exports"));
+        let export_manager = Arc::new(ExportJobManager::new(export_renderer));
 
         Self {
             commit_store,
@@ -113,9 +124,38 @@ impl AppState {
             sync_engine,
             proxy_cache,
             proxy_renderer,
+            export_manager,
+        }
+    }
+
+
+    pub fn new_with_everything(
+        commit_store: Arc<dyn CommitStore>,
+        media_store: Arc<dyn MediaStore>,
+        thumbnail_cache: FsThumbnailCache,
+        thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+        sync_engine: Arc<SyncEngine>,
+        proxy_cache: FsProxyCache,
+        proxy_renderer: Arc<dyn ProxyRenderer>,
+        export_manager: Arc<ExportJobManager>,
+    ) -> Self {
+        let thumbnail_queue =
+            ThumbnailQueue::new(thumbnail_cache.clone(), thumbnail_generator.clone(), 64);
+
+        Self {
+            commit_store,
+            media_store,
+            thumbnail_cache,
+            thumbnail_generator,
+            thumbnail_queue,
+            sync_engine,
+            proxy_cache,
+            proxy_renderer,
+            export_manager,
         }
     }
 }
+
 
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -227,8 +267,15 @@ pub enum ApiError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
-    #[error("Thumbnail error: {0}")]
-    Thumbnail(#[from] splice_render::ThumbError),
+    #[error("Job not found: {0}")]
+    JobNotFound(JobId),
+
+    #[error("Render error: {0}")]
+    Render(#[from] splice_render::RenderError),
+
+
+    #[error("GC error: {0}")]
+    Gc(#[from] splice_gc::GcError),
 
     #[error("Sync error: {0}")]
     Sync(#[from] SyncError),
@@ -237,12 +284,13 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            Self::Store(StoreError::CommitNotFound(_)) | Self::MediaNotFound(_) => {
-                (StatusCode::NOT_FOUND, self.to_string())
-            }
+            Self::Store(StoreError::CommitNotFound(_))
+            | Self::MediaNotFound(_)
+            | Self::JobNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Self::Store(StoreError::ParentNotFound(_)) => {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
+
             Self::Store(StoreError::DuplicateCommit(_)) => (StatusCode::CONFLICT, self.to_string()),
             Self::Store(StoreError::CycleDetected(_)) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
@@ -717,7 +765,211 @@ pub struct ExportRequest {
     #[serde(default)]
     pub commit_id: Option<CommitId>,
     #[serde(default)]
+    pub format: Option<ExportFormat>,
+    #[serde(default)]
+    pub resolution: Option<String>,
+    #[serde(default)]
     pub timeline_raw: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetentionPolicyRequest {
+    #[serde(default = "default_true")]
+    pub keep_starred_forever: bool,
+    #[serde(default = "default_thirty")]
+    pub prune_after_days: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_thirty() -> u64 {
+    30
+}
+
+impl From<RetentionPolicyRequest> for RetentionPolicy {
+    fn from(req: RetentionPolicyRequest) -> Self {
+        Self {
+            keep_starred_forever: req.keep_starred_forever,
+            prune_after: Duration::from_secs(req.prune_after_days * 24 * 60 * 60),
+        }
+    }
+}
+
+fn reconstruct_timeline_for_export(
+    state: &AppState,
+    commit_id: Option<CommitId>,
+    raw_timeline: Option<serde_json::Value>,
+) -> Result<(CommitId, splice_commit::Timeline), ApiError> {
+    if let Some(raw) = raw_timeline {
+        if let Ok(raw_state) = serde_json::from_value::<timeline::RawEditorState>(raw) {
+            let cid = commit_id.unwrap_or_else(CommitId::new);
+            let dummy_commit = Commit::create(
+                None,
+                "editor".to_string(),
+                "Export composition".to_string(),
+                MediaHash::compute(b"export"),
+                vec![],
+            );
+            let tl = Timeline::from_raw_state(&dummy_commit, &raw_state, RevertMode::Preview, false);
+            return Ok((cid, tl.to_splice_commit_timeline()));
+        }
+    }
+
+    let id = commit_id.ok_or_else(|| {
+        ApiError::BadRequest("Either commit_id or timeline_raw is required".to_string())
+    })?;
+
+    let commit = state.commit_store.get(&id)?;
+
+    if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
+        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+            let tl = Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false);
+            return Ok((id, tl.to_splice_commit_timeline()));
+        }
+    }
+
+    let tl = Timeline::reconstruct(&commit, RevertMode::Preview, false, Some(state.media_store.as_ref()));
+    Ok((id, tl.to_splice_commit_timeline()))
+}
+
+
+pub async fn start_export_commit(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<CommitId>,
+    req: Option<Json<ExportRequest>>,
+) -> Result<Json<ExportJob>, ApiError> {
+    let req = req.map(|r| r.0).unwrap_or_default();
+    let format = req.format.unwrap_or_default();
+    let (cid, timeline) = reconstruct_timeline_for_export(&state, Some(id), req.timeline_raw)?;
+    let job_id = state
+        .export_manager
+        .submit_job(cid, timeline, format)
+        .await;
+
+    let job = state
+        .export_manager
+        .get_job(&job_id)
+        .await
+        .ok_or(ApiError::JobNotFound(job_id))?;
+
+    Ok(Json(job))
+}
+
+pub async fn start_export_timeline(
+    State(state): State<AppState>,
+    Json(req): Json<ExportRequest>,
+) -> Result<Json<ExportJob>, ApiError> {
+    let format = req.format.unwrap_or_default();
+    let (cid, timeline) = reconstruct_timeline_for_export(&state, req.commit_id, req.timeline_raw)?;
+    let job_id = state
+        .export_manager
+        .submit_job(cid, timeline, format)
+        .await;
+
+    let job = state
+        .export_manager
+        .get_job(&job_id)
+        .await
+        .ok_or(ApiError::JobNotFound(job_id))?;
+
+    Ok(Json(job))
+}
+
+pub async fn export_status(
+    State(state): State<AppState>,
+    AxumPath(job_id): AxumPath<JobId>,
+) -> Result<Json<ExportJob>, ApiError> {
+    let job = state
+        .export_manager
+        .get_job(&job_id)
+        .await
+        .ok_or(ApiError::JobNotFound(job_id))?;
+    Ok(Json(job))
+}
+
+pub async fn download_export(
+    State(state): State<AppState>,
+    AxumPath(job_id): AxumPath<JobId>,
+) -> Result<Response, ApiError> {
+    let job = state
+        .export_manager
+        .get_job(&job_id)
+        .await
+        .ok_or(ApiError::JobNotFound(job_id))?;
+
+    match job.status {
+        JobStatus::Completed => {
+            let output_path = job.output_path.ok_or_else(|| {
+                ApiError::BadRequest("Export completed but output path is missing".to_string())
+            })?;
+
+            if !output_path.exists() {
+                return Err(ApiError::BadRequest("Exported file not found on disk".to_string()));
+            }
+
+            let bytes = std::fs::read(&output_path)
+                .map_err(|e| ApiError::Store(StoreError::Io(e)))?;
+
+            let ext = job.format.extension();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_str(job.format.content_type())
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            );
+            headers.insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("attachment; filename=\"splice_export_{job_id}.{ext}\""))
+                    .unwrap_or(HeaderValue::from_static("attachment; filename=\"splice_export.mp4\"")),
+            );
+
+            Ok((headers, bytes).into_response())
+        }
+        JobStatus::Processing | JobStatus::Queued => {
+            Err(ApiError::BadRequest("Export job is still processing".to_string()))
+        }
+        JobStatus::Failed(e) => {
+            Err(ApiError::BadRequest(format!("Export job failed: {e}")))
+        }
+    }
+}
+
+pub async fn run_gc(
+    State(state): State<AppState>,
+    req: Option<Json<RetentionPolicyRequest>>,
+) -> Result<Json<GcReport>, ApiError> {
+    let policy_req = req.map(|r| r.0).unwrap_or(RetentionPolicyRequest {
+        keep_starred_forever: true,
+        prune_after_days: 30,
+    });
+    let policy: RetentionPolicy = policy_req.into();
+
+    let report = splice_gc::collect_garbage(
+        state.commit_store.as_ref(),
+        state.media_store.as_ref(),
+        &policy,
+    )?;
+
+    Ok(Json(report))
+}
+
+pub async fn estimate_gc(
+    State(state): State<AppState>,
+) -> Result<Json<GcReport>, ApiError> {
+    let policy = RetentionPolicy {
+        keep_starred_forever: true,
+        prune_after: Duration::from_secs(30 * 24 * 60 * 60),
+    };
+
+    let report = splice_gc::estimate_reclaimable(
+        state.commit_store.as_ref(),
+        state.media_store.as_ref(),
+        &policy,
+    )?;
+
+    Ok(Json(report))
 }
 
 pub async fn export_video(
@@ -812,11 +1064,14 @@ pub async fn export_commit_video(
         State(state),
         Json(ExportRequest {
             commit_id: Some(id),
+            format: None,
+            resolution: None,
             timeline_raw: None,
         }),
     )
     .await
 }
+
 
 pub async fn squash_commits(
     State(state): State<AppState>,
@@ -886,13 +1141,18 @@ pub async fn stream_commit_preview(
                 if let Some(path) = state.media_store.resolve(media_hash) {
                     path
                 } else {
-                    return Err(ApiError::from(e));
+                    return Err(ApiError::BadRequest(format!(
+                        "Failed to render proxy video preview: {e}"
+                    )));
                 }
             } else {
-                return Err(ApiError::from(e));
+                return Err(ApiError::BadRequest(format!(
+                    "Failed to render proxy video preview: {e}"
+                )));
             }
         }
     };
+
 
     let service = ServeFile::new(&proxy_path);
     let mut res = match service.oneshot(req).await {
@@ -964,8 +1224,22 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/commits/:id/preview", get(stream_commit_preview))
         .route("/commits/:id/tags", post(add_commit_tag))
         .route("/commits/:id/tags/:label", delete(remove_commit_tag))
-        .route("/commits/:id/export", get(export_commit_video))
-        .route("/export", post(export_video))
+        .route(
+            "/commits/:id/export",
+            post(start_export_commit).get(export_commit_video),
+        )
+        .route(
+            "/export",
+            post(start_export_timeline).get(export_video),
+        )
+        .route("/jobs/:job_id", get(export_status))
+        .route("/exports/:job_id", get(export_status))
+        .route("/exports/:job_id/download", get(download_export))
+        .route("/gc/run", post(run_gc))
+        .route("/admin/gc", post(run_gc))
+        .route("/gc/estimate", get(estimate_gc))
+        .route("/admin/gc/estimate", get(estimate_gc))
+        .route("/gc/status", get(estimate_gc))
         .route("/tags", get(list_all_tags))
         .route("/media", post(upload_media))
         .route("/media/:hash", get(serve_media))
@@ -976,4 +1250,3 @@ pub fn router_with_state(state: AppState) -> Router {
         .layer(cors)
         .with_state(state)
 }
-

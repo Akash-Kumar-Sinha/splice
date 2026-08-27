@@ -69,6 +69,9 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import DiffInspector from './DiffInspector';
+import ExportDialog from './ExportDialog';
+import { Tree, Folder, File } from '@/components/ui/tree';
+
 
 
 
@@ -164,7 +167,9 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
+
   const [loadingTimeline, setLoadingTimeline] = useState<boolean>(false);
   const [activeHeadId, setActiveHeadId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
@@ -204,6 +209,10 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [showSquashModal, setShowSquashModal] = useState<boolean>(false);
   const [squashMessage, setSquashMessage] = useState<string>('');
   const [isSquashing, setIsSquashing] = useState<boolean>(false);
+
+  // Full-Res Export Dialog state
+  const [exportTarget, setExportTarget] = useState<{ id: string; message: string } | null>(null);
+
 
   const handleToggleSelectForSquash = (commitId: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -594,8 +603,8 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     setCollapsedNodeIds(new Set());
   };
 
-  // Render individual tree node recursively
-  const renderTreeNode = (node: CommitTreeNode) => {
+  // Render individual tree node recursively with clean L-turn connector
+  const renderTreeNode = (node: CommitTreeNode, parentId: string | null = null) => {
     const commit = node.commit;
     const isSelected = selectedCommitId === commit.id;
     const isSelectedForSquash = selectedForSquash.includes(commit.id);
@@ -607,17 +616,63 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
       node.tags?.includes("Director's Cut") ||
       node.tags?.includes('Starred');
 
+    const isLineHighlighted =
+      hoveredNodeId === commit.id ||
+      (parentId !== null && hoveredNodeId === parentId) ||
+      isSelected ||
+      (parentId !== null && selectedCommitId === parentId);
+
+    const isParentHighlighted =
+      isSelected ||
+      hoveredNodeId === commit.id ||
+      (hasChildren &&
+        node.children.some(
+          (c) =>
+            c.commit.id === hoveredNodeId ||
+            c.commit.id === selectedCommitId
+        ));
+
     return (
-      <div key={node.commit.id} className="flex flex-col gap-1 w-full">
+      <div key={node.commit.id} className="flex flex-col w-full relative">
+        {/* Commit Item Row */}
         <div
-          style={{ paddingLeft: `${node.depth * 14}px` }}
-          className="w-full flex items-center relative gap-1"
+          onMouseEnter={() => setHoveredNodeId(node.commit.id)}
+          onMouseLeave={() => setHoveredNodeId((curr) => curr === node.commit.id ? null : curr)}
+          className="flex items-center gap-1.5 w-full py-0.5 relative z-10"
         >
-          {node.depth > 0 && (
-            <div className="text-muted-foreground/60 font-mono text-[10px] select-none shrink-0">
-              └──
+          {/* L-shaped turn arrow connector (└──>) emerging directly from parent arrow line */}
+          {parentId !== null && (
+            <div className="absolute -left-3.5 -top-1 bottom-0 w-3.5 pointer-events-none z-0">
+              {/* Vertical line descending from parent arrow down to center */}
+              <div
+                className={cn(
+                  'absolute left-0 top-0 h-[calc(50%+4px)] w-px transition-colors duration-150',
+                  isLineHighlighted
+                    ? 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
+                    : 'bg-border/30'
+                )}
+              />
+              {/* Horizontal turn arm into this node */}
+              <div
+                className={cn(
+                  'absolute left-0 top-[calc(50%+3px)] w-3 h-px transition-colors duration-150',
+                  isLineHighlighted
+                    ? 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
+                    : 'bg-border/30'
+                )}
+              />
+              {/* Rightward arrow pointer tip */}
+              <div
+                className={cn(
+                  'absolute right-0 top-[calc(50%+1.5px)] size-1 border-t border-r rotate-45 transition-colors duration-150',
+                  isLineHighlighted
+                    ? 'border-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
+                    : 'border-border/40'
+                )}
+              />
             </div>
           )}
+
 
           {/* Collapsible toggle for branches with children */}
           {hasChildren ? (
@@ -625,7 +680,14 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               variant="ghost"
               size="icon-xs"
               onClick={(e) => toggleCollapseNode(node.commit.id, e)}
-              className="size-5 shrink-0 hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+              className={cn(
+                'size-5 shrink-0 rounded-md transition-all',
+                isParentHighlighted
+                  ? 'text-primary bg-primary/20 ring-1 ring-primary/40'
+                  : isCollapsed
+                  ? 'text-muted-foreground hover:text-foreground hover:bg-muted/80'
+                  : 'text-primary/70 hover:bg-primary/15'
+              )}
               title={isCollapsed ? 'Expand branches' : 'Collapse branches'}
             >
               {isCollapsed ? (
@@ -638,6 +700,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             <div className="size-5 shrink-0" />
           )}
 
+          {/* Commit Card */}
           <div
             onClick={() => {
               if (isDiffMode) {
@@ -647,15 +710,16 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               }
             }}
             className={cn(
-              'flex-1 min-w-0 text-left rounded-xl p-2.5 transition-all border flex flex-col gap-1.5 cursor-pointer relative',
+              'flex-1 min-w-0 text-left rounded-xl p-2.5 transition-all duration-150 border flex flex-col gap-1.5 cursor-pointer relative',
               isSelected && !isDiffMode
-                ? 'bg-card border-primary/70 shadow-sm'
-                : 'bg-card/20 hover:bg-card/60 border-border/40',
-              isSelectedForSquash && 'ring-1 ring-primary/80 border-primary/60 bg-primary/5',
+                ? 'bg-card border-primary ring-1 ring-primary/40 shadow-lg shadow-primary/10 brightness-110'
+                : 'bg-card/30 border-border/40 hover:bg-card/90 hover:border-primary/60 hover:brightness-110 hover:shadow-md hover:shadow-primary/5',
+              isSelectedForSquash && 'ring-1 ring-primary/80 border-primary/60 bg-primary/10',
               isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
               isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
             )}
           >
+
             <div className="flex gap-2 items-center">
               {/* Squash Selection Checkbox */}
               <Button
@@ -793,17 +857,15 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
           </div>
         </div>
 
-
-        {/* Recursive Children (rendered when not collapsed) */}
+        {/* Child branches */}
         {hasChildren && !isCollapsed && (
-          <div className="flex flex-col gap-1 w-full">
-            {node.children.map((child) => renderTreeNode(child))}
+          <div className="relative ml-2.5 pl-3.5 flex flex-col gap-1.5 pt-1">
+            {node.children.map((child) => renderTreeNode(child, node.commit.id))}
           </div>
         )}
       </div>
     );
   };
-
 
   return (
     <SidebarProvider
@@ -972,10 +1034,20 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                           No saved versions yet. Save your first edit in the Timeline Editor!
                         </div>
                       ) : (
-                        treeNodes.map((root) => renderTreeNode(root))
+                        <Tree
+                          initialSelectedId={selectedCommitId || undefined}
+                          indicator={true}
+                          className="w-full"
+                        >
+                          {treeNodes.map((root) => renderTreeNode(root, null))}
+                        </Tree>
+
+
                       )}
                     </div>
                   ) : (
+
+
                     <SidebarMenu className="gap-1.5">
                       {filteredCommits.length === 0 ? (
                         <div className="text-center py-10 text-muted-foreground text-xs flex flex-col items-center gap-2">
@@ -1261,18 +1333,14 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleDownloadCommitVideo(timeline.commit_id, timeline.message)}
-                        disabled={isDownloading}
-                        className="font-mono text-xs font-semibold gap-1.5 border-primary/40 text-foreground hover:bg-primary/10"
-                        title="Download rendered MP4 of this version"
+                        onClick={() => setExportTarget({ id: timeline.commit_id, message: timeline.message })}
+                        className="font-mono text-xs font-semibold gap-1.5 border-primary/40 text-foreground hover:bg-primary/10 shadow-sm"
+                        title="Export full-res ProRes / H.264 video of this version"
                       >
-                        {isDownloading ? (
-                          <Spinner className="size-3.5 text-primary" />
-                        ) : (
-                          <IconDownload className="size-3.5 text-primary" />
-                        )}
-                        {isDownloading ? 'Rendering MP4...' : 'Download Video'}
+                        <IconDownload className="size-3.5 text-primary" />
+                        Export Full-Res Video
                       </Button>
+
 
 
                       <Button
@@ -1750,9 +1818,17 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             </div>
           </div>
         )}
-
       </div>
+
+      {/* Full-Res Export Dialog */}
+      <ExportDialog
+        isOpen={!!exportTarget}
+        commitId={exportTarget?.id ?? ''}
+        commitMessage={exportTarget?.message ?? ''}
+        onClose={() => setExportTarget(null)}
+      />
     </SidebarProvider>
   );
 }
+
 

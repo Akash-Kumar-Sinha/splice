@@ -7,7 +7,9 @@ authors.workspace = true
 [dependencies]
 splice-commit.workspace = true
 splice-diff.workspace = true
+splice-gc.workspace = true
 splice-media.workspace = true
+
 splice-render.workspace = true
 splice-sync.workspace = true
 object_store.workspace = true

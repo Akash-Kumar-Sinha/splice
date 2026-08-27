@@ -1637,6 +1637,7 @@ dependencies = [
  "serde_json",
  "splice-commit",
  "splice-diff",
+ "splice-gc",
  "splice-media",
  "splice-render",
  "splice-sync",
@@ -1679,6 +1680,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "splice-gc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "splice-commit",
+ "splice-media",
+ "tempfile",
+ "thiserror",
+ "time",
+]
+
+[[package]]
 name = "splice-media"
 version = "0.1.0"
 dependencies = [
@@ -1700,8 +1714,10 @@ dependencies = [
  "splice-media",
  "tempfile",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

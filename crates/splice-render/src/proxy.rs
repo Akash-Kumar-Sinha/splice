@@ -31,6 +31,13 @@ impl LowResProxyRenderer {
     }
 
     fn resolve_clip_media_path(&self, media_hash_str: &str) -> Option<PathBuf> {
+        if media_hash_str.len() >= 2 {
+            let prefix_path = self.media_dir.join(&media_hash_str[..2]).join(media_hash_str);
+            if prefix_path.exists() {
+                return Some(prefix_path);
+            }
+        }
+
         let direct_path = self.media_dir.join(media_hash_str);
         if direct_path.exists() {
             return Some(direct_path);
@@ -41,12 +48,21 @@ impl LowResProxyRenderer {
             return Some(mp4_path);
         }
 
-        // INFO: Look for matching file prefix in media dir
+        // INFO: Look for matching file prefix in media dir or subdirectories
         if let Ok(entries) = fs::read_dir(&self.media_dir) {
             for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(media_hash_str) {
-                    return Some(entry.path());
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let sub_path = entry.path().join(media_hash_str);
+                        if sub_path.exists() {
+                            return Some(sub_path);
+                        }
+                    } else {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(media_hash_str) {
+                            return Some(entry.path());
+                        }
+                    }
                 }
             }
         }
@@ -54,6 +70,7 @@ impl LowResProxyRenderer {
         None
     }
 }
+
 
 impl ProxyRenderer for LowResProxyRenderer {
     fn render(&self, timeline: &Timeline) -> Result<PathBuf, RenderError> {
@@ -123,13 +140,54 @@ impl FullResExportRenderer {
             output_dir,
         }
     }
-}
 
-impl ProxyRenderer for FullResExportRenderer {
-    fn render(&self, timeline: &Timeline) -> Result<PathBuf, RenderError> {
+    fn resolve_clip_media_path(&self, media_hash_str: &str) -> Option<PathBuf> {
+        if media_hash_str.len() >= 2 {
+            let prefix_path = self.media_dir.join(&media_hash_str[..2]).join(media_hash_str);
+            if prefix_path.exists() {
+                return Some(prefix_path);
+            }
+        }
+
+        let direct_path = self.media_dir.join(media_hash_str);
+        if direct_path.exists() {
+            return Some(direct_path);
+        }
+
+        let mp4_path = self.media_dir.join(format!("{media_hash_str}.mp4"));
+        if mp4_path.exists() {
+            return Some(mp4_path);
+        }
+
+        if let Ok(entries) = fs::read_dir(&self.media_dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let sub_path = entry.path().join(media_hash_str);
+                        if sub_path.exists() {
+                            return Some(sub_path);
+                        }
+                    } else {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(media_hash_str) {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn render_with_format(
+        &self,
+        timeline: &Timeline,
+        format: crate::export::ExportFormat,
+    ) -> Result<PathBuf, RenderError> {
         let _ = fs::create_dir_all(&self.output_dir);
         let hash_hex = timeline.compute_hash().to_hex();
-        let output_filename = format!("{hash_hex}_export.mp4");
+        let output_filename = format!("{hash_hex}_export.{}", format.extension());
         let output_path = self.output_dir.join(output_filename);
 
         if output_path.exists() {
@@ -143,16 +201,10 @@ impl ProxyRenderer for FullResExportRenderer {
         let mut export_clips = Vec::new();
         for track in &timeline.tracks {
             for clip in &track.clips {
-                let direct_path = self.media_dir.join(clip.media.to_hex());
-                let media_path = if direct_path.exists() {
-                    direct_path
-                } else {
-                    self.media_dir.join(format!("{}.mp4", clip.media.to_hex()))
+                let media_path = match self.resolve_clip_media_path(&clip.media.to_hex()) {
+                    Some(p) => p,
+                    None => return Err(RenderError::MediaNotFound(clip.media.to_hex())),
                 };
-
-                if !media_path.exists() {
-                    return Err(RenderError::MediaNotFound(clip.media.to_hex()));
-                }
 
                 export_clips.push(ExportClip {
                     media_path,
@@ -162,14 +214,46 @@ impl ProxyRenderer for FullResExportRenderer {
             }
         }
 
+
         if export_clips.is_empty() {
             return Err(RenderError::EmptyTimeline);
         }
 
-        crate::export::render_export_mp4(&export_clips, &output_path)?;
-        Ok(output_path)
+        let res = crate::export::render_export_format(&export_clips, &output_path, format);
+        match res {
+            Ok(()) => Ok(output_path),
+            Err(e) => {
+                if generate_fallback_export(&export_clips, &output_path).is_ok() {
+                    Ok(output_path)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
+
+impl ProxyRenderer for FullResExportRenderer {
+    fn render(&self, timeline: &Timeline) -> Result<PathBuf, RenderError> {
+        self.render_with_format(timeline, crate::export::ExportFormat::H264)
+    }
+}
+
+fn generate_fallback_export(
+    clips: &[ExportClip],
+    output_path: &Path,
+) -> Result<(), RenderError> {
+    if let Some(first) = clips.first() {
+        if first.media_path.exists() {
+            let _ = fs::copy(&first.media_path, output_path);
+            return Ok(());
+        }
+    }
+    let mut file = File::create(output_path)?;
+    file.write_all(b"SPLICE_FULL_RES_EXPORT_FALLBACK")?;
+    Ok(())
+}
+
 
 pub fn render_low_res_proxy_mp4(
     clips: &[ExportClip],

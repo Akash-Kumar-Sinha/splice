@@ -35,25 +35,24 @@ import {
   ProgressTrack,
   ProgressIndicator,
 } from '@/components/ui/progress';
-import {
-  VideoPlayer,
-  VideoPlayerControlBar,
-  VideoPlayerPlayButton,
-  VideoPlayerTimeRange,
-  VideoPlayerTimeDisplay,
-  VideoPlayerMuteButton,
-  VideoPlayerVolumeRange,
-  VideoPlayerSeekBackwardButton,
-  VideoPlayerSeekForwardButton,
-} from '@/components/ui/video_player';
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
-
-
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+function formatTimestamp(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return '00:00.0';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const tenths = Math.floor((seconds % 1) * 10);
+  if (hrs > 0) {
+    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${tenths}`;
+  }
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${tenths}`;
+}
+
 
 export interface Clip {
   id: string;
@@ -624,9 +623,10 @@ export default function TimelineEditor({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background text-foreground font-sans">
+    <div className="flex flex-col h-full min-h-0 bg-background text-foreground font-sans overflow-hidden">
       {/* Top Controls Header */}
-      <div className="border-b border-border bg-card/60 p-4 flex flex-wrap items-center justify-between gap-4">
+      <div className="shrink-0 border-b border-border bg-card/60 p-4 flex flex-wrap items-center justify-between gap-4">
+
         <div className="flex items-center gap-2.5 flex-wrap">
           <Button
             onClick={handleStartNewProject}
@@ -773,28 +773,42 @@ export default function TimelineEditor({
         </div>
       )}
 
-      {/* Center Layout: Video Preview Player + Drop Zone */}
-      <ScrollArea className="flex-1 h-full w-full">
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-6 p-6 items-stretch">
-          {/* Left: Video Player Monitor */}
-          <Card className="flex flex-col justify-between p-4 bg-card/40">
+      {/* Scrollable Main Workspace using ScrollArea */}
+      <ScrollArea className="flex-1 min-h-0 size-full">
+        <div className="p-6 flex flex-col gap-6 w-full">
+          {/* Top Grid: Video Player Monitor + Media Ingest & Overview */}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-6 items-start">
+          {/* Left: Video Player Monitor Card */}
+          <Card className="flex flex-col p-4 bg-card/50 border border-border rounded-2xl shadow-sm">
+            {/* Monitor Header */}
             <div className="flex items-center justify-between pb-3 border-b border-border text-xs font-mono text-muted-foreground">
-              <span className="font-medium text-foreground flex items-center gap-1.5">
-                <IconMovie className="size-3.5" /> Video Monitor Preview
-              </span>
-              <Badge variant="secondary" className="font-mono">
-                {playhead.toFixed(2)}s / {totalDuration.toFixed(2)}s
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-foreground flex items-center gap-1.5">
+                  <IconMovie className="size-3.5 text-primary" /> Video Monitor Preview
+                </span>
+                {activeClipInfo && (
+                  <Badge variant="outline" className="text-[10px] font-mono border-primary/30 text-primary">
+                    {activeClipInfo.clip.name}
+                  </Badge>
+                )}
+              </div>
+              <Badge variant="secondary" className="font-mono text-[11px]">
+                {formatTimestamp(playhead)} / {formatTimestamp(totalDuration)}
               </Badge>
             </div>
 
-            <div className="relative aspect-video bg-black rounded-xl overflow-hidden my-4 flex items-center justify-center border border-border">
+            {/* Video Viewport Container */}
+            <div
+              className="relative aspect-video bg-black rounded-xl overflow-hidden my-3 flex items-center justify-center border border-border group cursor-pointer"
+              onClick={togglePlay}
+            >
               {activeClipInfo ? (
-                <VideoPlayer className="w-full h-full rounded-xl overflow-hidden border border-border">
+                <>
                   <video
-                    slot="media"
                     ref={videoRef}
                     src={`${API_URL}/media/${activeClipInfo.clip.media}`}
-                    className="w-full h-full object-contain"
+                    className="w-full h-full object-contain select-none"
                     playsInline
                     preload="auto"
                     suppressHydrationWarning
@@ -808,16 +822,30 @@ export default function TimelineEditor({
                       }
                     }}
                   />
-                  <VideoPlayerControlBar>
-                    <VideoPlayerPlayButton />
-                    <VideoPlayerSeekBackwardButton />
-                    <VideoPlayerSeekForwardButton />
-                    <VideoPlayerTimeRange />
-                    <VideoPlayerTimeDisplay showDuration />
-                    <VideoPlayerMuteButton />
-                    <VideoPlayerVolumeRange />
-                  </VideoPlayerControlBar>
-                </VideoPlayer>
+                  {/* Play/Pause Center Overlay on Hover */}
+                  <div
+                    className={cn(
+                      "absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity pointer-events-none",
+                      isPlaying ? "opacity-0 group-hover:opacity-100" : "opacity-100"
+                    )}
+                  >
+                    <div className="size-12 rounded-full bg-background/80 backdrop-blur-md border border-border flex items-center justify-center text-foreground shadow-lg">
+                      {isPlaying ? (
+                        <IconPlayerPause className="size-5" />
+                      ) : (
+                        <IconPlayerPlay className="size-5 ml-0.5" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Floating Clip Name Badge */}
+                  <div className="absolute top-2.5 left-2.5 bg-background/85 border border-border/80 rounded-lg px-2.5 py-1 text-[10px] font-mono text-foreground backdrop-blur-md pointer-events-none z-10 flex items-center gap-1 shadow-sm">
+                    <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+                    <span className="truncate max-w-[180px]">
+                      {activeClipInfo.clip.name} ({activeClipInfo.offset.toFixed(1)}s)
+                    </span>
+                  </div>
+                </>
               ) : (
                 <div className="text-muted-foreground font-mono text-xs text-center p-6 flex flex-col items-center gap-2">
                   <IconVideo className="size-8 text-muted-foreground/50" />
@@ -826,371 +854,386 @@ export default function TimelineEditor({
                   Upload a video to begin editing.
                 </div>
               )}
+            </div>
 
-              {/* Playhead Overlay Tag */}
-              {activeClipInfo && (
-                <div className="absolute top-2 left-2 bg-background/80 border border-border rounded-lg px-2.5 py-1 text-[11px] font-mono text-foreground backdrop-blur pointer-events-none z-10">
-                  Clip: {activeClipInfo.clip.name} ({activeClipInfo.offset.toFixed(1)}s)
+            {/* Single Unified Video Controller Bar */}
+            <div className="flex flex-col gap-3 pt-1">
+              {/* Global Timeline Scrubber */}
+              <div className="flex flex-col gap-1">
+                <input
+                  type="range"
+                  min="0"
+                  max={Math.max(0.1, totalDuration)}
+                  step="0.01"
+                  value={playhead}
+                  onChange={(e) => handleSeek(parseFloat(e.target.value))}
+                  className="w-full accent-primary cursor-pointer h-2 bg-muted/60 hover:bg-muted rounded-full transition-all"
+                  title={`Seek: ${formatTimestamp(playhead)}`}
+                />
+                <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground px-0.5">
+                  <span>{formatTimestamp(playhead)}</span>
+                  <span>{formatTimestamp(totalDuration)}</span>
+                </div>
+              </div>
+
+              {/* Transport Controls Row */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="icon-xs"
+                    onClick={() => handleSeek(0)}
+                    title="Jump to Start (0:00)"
+                    className="size-7"
+                  >
+                    <IconPlayerSkipBack className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon-xs"
+                    onClick={() => handleSeek(playhead - 5)}
+                    title="Step 5s Backward"
+                    className="size-7 font-mono text-[10px]"
+                  >
+                    -5s
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={togglePlay}
+                    className="font-mono font-bold text-xs h-7 px-3 gap-1 shadow-sm"
+                  >
+                    {isPlaying ? (
+                      <>
+                        <IconPlayerPause className="size-3.5" /> Pause
+                      </>
+                    ) : (
+                      <>
+                        <IconPlayerPlay className="size-3.5" /> Play
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon-xs"
+                    onClick={() => handleSeek(playhead + 5)}
+                    title="Step 5s Forward"
+                    className="size-7 font-mono text-[10px]"
+                  >
+                    +5s
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon-xs"
+                    onClick={() => handleSeek(totalDuration)}
+                    title="Jump to End"
+                    className="size-7"
+                  >
+                    <IconPlayerSkipForward className="size-3.5" />
+                  </Button>
+
+                  <Separator orientation="vertical" className="h-5 mx-1" />
+
+                  {/* Split at Playhead */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleSplitAtPlayhead}
+                    title="Split clip at playhead (Hotkey: S)"
+                    className="font-mono text-xs h-7 px-2.5 gap-1.5"
+                  >
+                    <IconScissors className="size-3 text-primary" />
+                    Split (S)
+                  </Button>
+                </div>
+
+                {/* Volume & Audio Controls */}
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => setIsMuted(!isMuted)}
+                    title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+                    className="size-7"
+                  >
+                    {isMuted || volume === 0 ? (
+                      <IconVolumeOff className="size-3.5 text-destructive" />
+                    ) : (
+                      <IconVolume className="size-3.5 text-muted-foreground hover:text-foreground" />
+                    )}
+                  </Button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => {
+                      const newVol = parseFloat(e.target.value);
+                      setVolume(newVol);
+                      if (isMuted && newVol > 0) {
+                        setIsMuted(false);
+                      }
+                    }}
+                    className="w-20 accent-primary cursor-pointer h-1.5 bg-muted rounded-full"
+                    title={`Volume: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
+                  />
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Right: Drag & Drop Zone + Clip Inspector */}
+          <div className="flex flex-col gap-4">
+            {/* Dropzone */}
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleFileUpload(e.dataTransfer.files);
+              }}
+              onClick={() => !isUploading && fileInputRef.current?.click()}
+              className={cn(
+                "border-2 border-dashed border-border hover:border-primary/80 bg-muted/20 hover:bg-muted/40 rounded-2xl p-6 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-2 min-h-[150px]",
+                isUploading && "pointer-events-none opacity-90"
+              )}
+            >
+              <IconUpload className="size-7 text-muted-foreground" />
+              <div className="text-sm font-medium text-foreground">
+                Drag and drop media files here, or click to browse
+              </div>
+              <div className="text-xs text-muted-foreground font-mono">
+                Accepts MP4, WebM, MOV. Files will be hashed via SHA-256 and deduped.
+              </div>
+
+              {/* Upload Progress Indicator */}
+              {isUploading && (
+                <div className="w-full max-w-sm mt-3 bg-card border border-primary/40 rounded-xl p-3 flex flex-col gap-2 shadow-md animate-in fade-in-0 duration-150">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <div className="flex items-center gap-2 truncate">
+                      <Spinner className="size-3.5 text-primary shrink-0" />
+                      <span className="font-semibold text-foreground truncate max-w-[200px]">
+                        Uploading {uploadFileName || 'media'}...
+                      </span>
+                    </div>
+                    <span className="text-primary font-bold shrink-0 ml-2">{uploadProgress}%</span>
+                  </div>
+                  <Progress value={uploadProgress} className="w-full">
+                    <ProgressTrack className="h-2 bg-muted rounded-full overflow-hidden">
+                      <ProgressIndicator className="h-full bg-primary rounded-full transition-all duration-150" />
+                    </ProgressTrack>
+                  </Progress>
                 </div>
               )}
             </div>
 
-
-
-          {/* Playback Transport Controls + Audio + Split Controls */}
-          <div className="flex flex-col gap-3 pt-2">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-1.5">
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={() => handleSeek(0)}
-                  title="Jump to Start"
-                >
-                  <IconPlayerSkipBack />
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={togglePlay}
-                  className="font-mono font-bold"
-                >
-                  {isPlaying ? (
-                    <>
-                      <IconPlayerPause data-icon="inline-start" /> Pause
-                    </>
+            {/* Quick Clip List */}
+            <Card className="flex-1 flex flex-col p-4 bg-card/40 border border-border rounded-2xl">
+              <CardHeader className="p-0 pb-3 border-b border-border">
+                <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
+                  Track Clips Overview ({primaryTrack.clips.length})
+                </CardTitle>
+              </CardHeader>
+              <ScrollArea className="max-h-52 w-full pr-1">
+                <CardContent className="p-0 pt-3 flex flex-col gap-2">
+                  {primaryTrack.clips.length === 0 ? (
+                    <div className="text-xs font-mono text-muted-foreground text-center py-6">
+                      No clips on track yet.
+                    </div>
                   ) : (
-                    <>
-                      <IconPlayerPlay data-icon="inline-start" /> Play
-                    </>
+                    primaryTrack.clips.map((clip, i) => (
+                      <div
+                        key={clip.id}
+                        className="bg-background border border-border rounded-xl p-2.5 flex items-center justify-between text-xs font-mono"
+                      >
+                        <div className="flex items-center gap-2 truncate max-w-[240px]">
+                          <Badge variant="outline" className="font-mono text-[10px]">
+                            #{i + 1}
+                          </Badge>
+                          <span className="text-foreground truncate">{clip.name}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-muted-foreground">
+                            {clip.in_point.toFixed(1)}s - {clip.out_point.toFixed(1)}s
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            onClick={() => setEditorState((prev) => removeClip(prev, clip.id))}
+                            className="text-destructive hover:text-destructive"
+                            title="Remove Clip"
+                          >
+                            <IconTrash className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))
                   )}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={() => handleSeek(totalDuration)}
-                  title="Jump to End"
-                >
-                  <IconPlayerSkipForward />
-                </Button>
-
-                <Separator orientation="vertical" className="h-6 mx-1" />
-
-                {/* Split at Playhead button */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleSplitAtPlayhead}
-                  title="Split clip at playhead (Hotkey: S)"
-                  className="font-mono text-xs"
-                >
-                  <IconScissors data-icon="inline-start" />
-                  Split (S)
-                </Button>
-              </div>
-
-              {/* Volume & Audio Controls */}
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setIsMuted(!isMuted)}
-                  title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
-                >
-                  {isMuted || volume === 0 ? (
-                    <IconVolumeOff className="size-4 text-destructive" />
-                  ) : (
-                    <IconVolume className="size-4 text-primary" />
-                  )}
-                </Button>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={isMuted ? 0 : volume}
-                  onChange={(e) => {
-                    const newVol = parseFloat(e.target.value);
-                    setVolume(newVol);
-                    if (isMuted && newVol > 0) {
-                      setIsMuted(false);
-                    }
-                  }}
-                  className="w-20 accent-primary cursor-pointer"
-                  title={`Volume: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
-                />
-              </div>
-            </div>
-
-            {/* Main Playhead Scrubber */}
-            <input
-              type="range"
-              min="0"
-              max={Math.max(0.1, totalDuration)}
-              step="0.05"
-              value={playhead}
-              onChange={(e) => handleSeek(parseFloat(e.target.value))}
-              className="w-full accent-primary cursor-pointer"
-            />
+                </CardContent>
+              </ScrollArea>
+            </Card>
           </div>
-        </Card>
-
-        {/* Radial Separator Vertical */}
-        <div className="hidden md:flex items-center justify-center px-1">
-          <div className="w-px h-full min-h-[350px] bg-gradient-to-b from-transparent via-border to-transparent [mask-image:radial-gradient(ellipse_at_center,black_50%,transparent_100%)]" />
         </div>
 
-        {/* Right: Drag & Drop Zone + Clip Inspector */}
-        <div className="flex flex-col gap-4">
-          {/* Dropzone */}
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              handleFileUpload(e.dataTransfer.files);
-            }}
-            onClick={() => !isUploading && fileInputRef.current?.click()}
-            className={cn(
-              "border-2 border-dashed border-border hover:border-primary/80 bg-muted/20 hover:bg-muted/40 rounded-2xl p-6 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-2 min-h-[160px]",
-              isUploading && "pointer-events-none opacity-90"
-            )}
-          >
-            <IconUpload className="size-8 text-muted-foreground" />
-            <div className="text-sm font-medium text-foreground">
-              Drag and drop media files here, or click to browse
-            </div>
-            <div className="text-xs text-muted-foreground font-mono">
-              Accepts MP4, WebM, MOV. Files will be hashed via SHA-256 and deduped.
+        {/* Bottom Section: Multi-Clip Video Track Editor */}
+        <Card className="border border-border bg-card/80 p-4 rounded-2xl flex flex-col gap-3 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-mono text-muted-foreground flex-wrap gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="secondary" className="font-bold uppercase">
+                Video Track 1
+              </Badge>
+              <span className="text-muted-foreground text-[11px]">
+                (Drag handles to trim • Press <strong className="text-foreground">S</strong> to split at playhead • Drag to reorder)
+              </span>
             </div>
 
-            {/* Progress Component Showcase during Upload */}
-            {isUploading && (
-              <div className="w-full max-w-sm mt-3 bg-card border border-primary/40 rounded-xl p-3 flex flex-col gap-2 shadow-md animate-in fade-in-0 duration-150">
-                <div className="flex items-center justify-between text-xs font-mono">
-                  <div className="flex items-center gap-2 truncate">
-                    <Spinner className="size-3.5 text-primary shrink-0" />
-                    <span className="font-semibold text-foreground truncate max-w-[200px]">
-                      Uploading {uploadFileName || 'media'}...
-                    </span>
-                  </div>
-                  <span className="text-primary font-bold shrink-0 ml-2">{uploadProgress}%</span>
+            <div className="flex items-center gap-3">
+              {/* Timeline Zoom Toggle */}
+              <div className="flex items-center gap-1 bg-muted/30 p-0.5 rounded-lg border border-border">
+                <IconZoomIn className="size-3 text-muted-foreground ml-1.5" />
+                {[1, 2, 4].map((z) => (
+                  <Button
+                    key={z}
+                    variant={zoomLevel === z ? 'secondary' : 'ghost'}
+                    size="icon-xs"
+                    className="text-[10px] font-mono h-5 px-1.5 w-auto"
+                    onClick={() => setZoomLevel(z)}
+                    title={`Zoom: ${z === 1 ? 'Fit (100%)' : `${z * 100}%`}`}
+                  >
+                    {z === 1 ? 'Fit' : `${z}x`}
+                  </Button>
+                ))}
+              </div>
+
+              <Badge variant="outline" className="font-mono text-primary font-bold text-[11px]">
+                Playhead: {formatTimestamp(playhead)} ({playhead.toFixed(2)}s)
+              </Badge>
+            </div>
+          </div>
+
+          {/* Horizontal Scrollable Timeline Sequence Track */}
+          <ScrollArea className="w-full pb-1" orientation="horizontal">
+            <div className="relative bg-background/60 border border-border rounded-xl p-3 min-h-[90px] flex items-center min-w-full">
+              {primaryTrack.clips.length === 0 ? (
+                <div className="w-full text-center text-xs font-mono text-muted-foreground py-4">
+                  Timeline is empty. Import media above to populate track.
                 </div>
-                <Progress value={uploadProgress} className="w-full">
-                  <ProgressTrack className="h-2 bg-muted rounded-full overflow-hidden">
-                    <ProgressIndicator className="h-full bg-primary rounded-full transition-all duration-150" />
-                  </ProgressTrack>
-                </Progress>
-              </div>
-            )}
-          </div>
-
-
-          {/* Quick Clip List */}
-          <Card className="flex-1 flex flex-col p-4 bg-card/40">
-            <CardHeader className="p-0 pb-3 border-b border-border">
-              <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
-                Track Clips Overview ({primaryTrack.clips.length})
-              </CardTitle>
-            </CardHeader>
-            <ScrollArea className="max-h-56 w-full pr-1">
-              <CardContent className="p-0 pt-3 flex flex-col gap-2">
-                {primaryTrack.clips.length === 0 ? (
-                  <div className="text-xs font-mono text-muted-foreground text-center py-6">
-                    No clips on track yet.
-                  </div>
-                ) : (
-                  primaryTrack.clips.map((clip, i) => (
-                    <div
-                      key={clip.id}
-                      className="bg-background border border-border rounded-xl p-2.5 flex items-center justify-between text-xs font-mono"
-                    >
-                      <div className="flex items-center gap-2 truncate max-w-[240px]">
-                        <Badge variant="outline" className="font-mono text-[10px]">
-                          #{i + 1}
-                        </Badge>
-                        <span className="text-foreground truncate">{clip.name}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-muted-foreground">
-                          {clip.in_point.toFixed(1)}s - {clip.out_point.toFixed(1)}s
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => setEditorState((prev) => removeClip(prev, clip.id))}
-                          className="text-destructive hover:text-destructive"
-                          title="Remove Clip"
-                        >
-                          <IconTrash />
-                        </Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </CardContent>
-            </ScrollArea>
-          </Card>
-        </div>
-      </div>
-    </ScrollArea>
-
-
-      {/* Bottom Pane: Single Video Track Multi-Clip Editor */}
-      <div className="border-t border-border bg-card/90 p-4 flex flex-col gap-3">
-        <div className="flex items-center justify-between text-xs font-mono text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="font-bold uppercase">
-              Video Track 1
-            </Badge>
-            <span className="text-muted-foreground">
-              (Drag handles to trim • Press <strong className="text-foreground">S</strong> or click <strong className="text-foreground">Split</strong> to cut at playhead • Drag to reorder)
-            </span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Timeline Zoom Toggle Controls */}
-            <div className="flex items-center gap-1.5 bg-muted/30 p-0.5 rounded-lg border border-border">
-              <IconZoomIn className="size-3 text-muted-foreground ml-1.5" />
-              {[1, 2, 4].map((z) => (
-                <Button
-                  key={z}
-                  variant={zoomLevel === z ? 'secondary' : 'ghost'}
-                  size="icon-xs"
-                  className="text-[10px] font-mono h-5 px-1.5 w-auto"
-                  onClick={() => setZoomLevel(z)}
-                  title={`Zoom: ${z === 1 ? 'Fit (100%)' : `${z * 100}%`}`}
+              ) : (
+                <div
+                  style={{ width: zoomLevel === 1 ? '100%' : `${zoomLevel * 100}%` }}
+                  className="flex gap-2 min-w-full items-center relative transition-all"
                 >
-                  {z === 1 ? 'Fit' : `${z}x`}
-                </Button>
-              ))}
+                  {primaryTrack.clips.map((clip, index) => {
+                    const clipDur = clip.out_point - clip.in_point;
+                    const widthPercent = totalDuration > 0 ? (clipDur / totalDuration) * 100 : 100;
+                    const isActive = activeClipInfo?.clip.id === clip.id;
+
+                    return (
+                      <div
+                        key={clip.id}
+                        draggable
+                        onDragStart={() => setDraggedIndex(index)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (draggedIndex !== null && draggedIndex !== index) {
+                            setEditorState((prev) => moveClip(prev, draggedIndex, index));
+                            setDraggedIndex(null);
+                          }
+                        }}
+                        style={{ width: `${widthPercent}%`, minWidth: '110px' }}
+                        className={cn(
+                          'group relative h-16 rounded-xl p-2 flex flex-col justify-between select-none cursor-grab active:cursor-grabbing transition-all border-2',
+                          isActive
+                            ? 'bg-primary/20 border-primary shadow-md shadow-primary/10'
+                            : 'bg-secondary/40 hover:bg-secondary/70 border-border'
+                        )}
+                        onClick={() => handleSeek(clip.position)}
+                      >
+                        {/* Left Trim Handle (In-Point) */}
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-l-lg flex items-center justify-center transition-colors"
+                          title="Trim In-Point"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            const startX = e.clientX;
+                            const startIn = clip.in_point;
+                            const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
+                            const elementWidth = rect?.width || 200;
+                            const secondsPerPixel = clipDur / Math.max(1, elementWidth);
+
+                            const onMouseMove = (moveEvent: MouseEvent) => {
+                              const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
+                              setEditorState((prev) =>
+                                trimClip(prev, clip.id, 'in', startIn + deltaSeconds)
+                              );
+                            };
+                            const onMouseUp = () => {
+                              window.removeEventListener('mousemove', onMouseMove);
+                              window.removeEventListener('mouseup', onMouseUp);
+                            };
+                            window.addEventListener('mousemove', onMouseMove);
+                            window.addEventListener('mouseup', onMouseUp);
+                          }}
+                        >
+                          <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
+                        </div>
+
+                        {/* Clip Body Info */}
+                        <div className="px-2 truncate">
+                          <div className="text-xs font-semibold text-foreground truncate font-sans">
+                            {clip.name}
+                          </div>
+                          <div className="text-[10px] font-mono text-muted-foreground">
+                            {clipDur.toFixed(1)}s (in: {clip.in_point.toFixed(1)}s, out: {clip.out_point.toFixed(1)}s)
+                          </div>
+                        </div>
+
+                        <div className="px-2 flex justify-between items-center text-[9px] font-mono text-muted-foreground">
+                          <span>pos: {clip.position.toFixed(1)}s</span>
+                          <span className="text-primary truncate max-w-[60px]">
+                            {clip.media.slice(0, 6)}
+                          </span>
+                        </div>
+
+                        {/* Right Trim Handle (Out-Point) */}
+                        <div
+                          className="absolute right-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-r-lg flex items-center justify-center transition-colors"
+                          title="Trim Out-Point"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            const startX = e.clientX;
+                            const startOut = clip.out_point;
+                            const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
+                            const elementWidth = rect?.width || 200;
+                            const secondsPerPixel = clipDur / Math.max(1, elementWidth);
+
+                            const onMouseMove = (moveEvent: MouseEvent) => {
+                              const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
+                              setEditorState((prev) =>
+                                trimClip(prev, clip.id, 'out', startOut + deltaSeconds)
+                              );
+                            };
+                            const onMouseUp = () => {
+                              window.removeEventListener('mousemove', onMouseMove);
+                              window.removeEventListener('mouseup', onMouseUp);
+                            };
+                            window.addEventListener('mousemove', onMouseMove);
+                            window.addEventListener('mouseup', onMouseUp);
+                          }}
+                        >
+                          <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-
-            <Badge variant="outline" className="font-mono text-primary font-bold">
-              Playhead: {playhead.toFixed(2)}s
-            </Badge>
-          </div>
+          </ScrollArea>
+        </Card>
         </div>
-
-        {/* Timeline Scroll Container */}
-        <ScrollArea className="w-full pb-1" orientation="horizontal">
-          <div className="relative bg-background border border-border rounded-2xl p-3 min-h-[90px] flex items-center min-w-full">
-            {primaryTrack.clips.length === 0 ? (
-              <div className="w-full text-center text-xs font-mono text-muted-foreground py-4">
-                Timeline is empty. Import media above to populate track.
-              </div>
-            ) : (
-              <div
-                style={{ width: zoomLevel === 1 ? '100%' : `${zoomLevel * 100}%` }}
-                className="flex gap-2 min-w-full items-center relative transition-all"
-              >
-                {primaryTrack.clips.map((clip, index) => {
-                  const clipDur = clip.out_point - clip.in_point;
-                  const widthPercent = totalDuration > 0 ? (clipDur / totalDuration) * 100 : 100;
-                  const isActive = activeClipInfo?.clip.id === clip.id;
-
-                  return (
-                    <div
-                      key={clip.id}
-                      draggable
-                      onDragStart={() => setDraggedIndex(index)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => {
-                        if (draggedIndex !== null && draggedIndex !== index) {
-                          setEditorState((prev) => moveClip(prev, draggedIndex, index));
-                          setDraggedIndex(null);
-                        }
-                      }}
-                      style={{ width: `${widthPercent}%`, minWidth: '100px' }}
-                      className={cn(
-                        'group relative h-16 rounded-xl p-2 flex flex-col justify-between select-none cursor-grab active:cursor-grabbing transition-all border-2',
-                        isActive
-                          ? 'bg-primary/20 border-primary shadow-lg shadow-primary/10'
-                          : 'bg-secondary/40 hover:bg-secondary/70 border-border'
-                      )}
-                      onClick={() => handleSeek(clip.position)}
-                    >
-                      {/* Left Trim Handle (In-Point) */}
-                      <div
-                        className="absolute left-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-l-lg flex items-center justify-center transition-colors"
-                        title="Trim In-Point"
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          const startX = e.clientX;
-                          const startIn = clip.in_point;
-                          const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
-                          const elementWidth = rect?.width || 200;
-                          const secondsPerPixel = clipDur / Math.max(1, elementWidth);
-
-                          const onMouseMove = (moveEvent: MouseEvent) => {
-                            const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
-                            setEditorState((prev) =>
-                              trimClip(prev, clip.id, 'in', startIn + deltaSeconds)
-                            );
-                          };
-                          const onMouseUp = () => {
-                            window.removeEventListener('mousemove', onMouseMove);
-                            window.removeEventListener('mouseup', onMouseUp);
-                          };
-                          window.addEventListener('mousemove', onMouseMove);
-                          window.addEventListener('mouseup', onMouseUp);
-                        }}
-                      >
-                        <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
-                      </div>
-
-                      {/* Clip Body Info */}
-                      <div className="px-2 truncate">
-                        <div className="text-xs font-semibold text-foreground truncate font-sans">
-                          {clip.name}
-                        </div>
-                        <div className="text-[10px] font-mono text-muted-foreground">
-                          {clipDur.toFixed(1)}s (in: {clip.in_point.toFixed(1)}s, out: {clip.out_point.toFixed(1)}s)
-                        </div>
-                      </div>
-
-                      <div className="px-2 flex justify-between items-center text-[9px] font-mono text-muted-foreground">
-                        <span>pos: {clip.position.toFixed(1)}s</span>
-                        <span className="text-primary truncate max-w-[60px]">
-                          {clip.media.slice(0, 6)}
-                        </span>
-                      </div>
-
-                      {/* Right Trim Handle (Out-Point) */}
-                      <div
-                        className="absolute right-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-r-lg flex items-center justify-center transition-colors"
-                        title="Trim Out-Point"
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          const startX = e.clientX;
-                          const startOut = clip.out_point;
-                          const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
-                          const elementWidth = rect?.width || 200;
-                          const secondsPerPixel = clipDur / Math.max(1, elementWidth);
-
-                          const onMouseMove = (moveEvent: MouseEvent) => {
-                            const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
-                            setEditorState((prev) =>
-                              trimClip(prev, clip.id, 'out', startOut + deltaSeconds)
-                            );
-                          };
-                          const onMouseUp = () => {
-                            window.removeEventListener('mousemove', onMouseMove);
-                            window.removeEventListener('mouseup', onMouseUp);
-                          };
-                          window.addEventListener('mousemove', onMouseMove);
-                          window.addEventListener('mouseup', onMouseUp);
-                        }}
-                      >
-                        <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </ScrollArea>
-      </div>
-
+      </ScrollArea>
     </div>
   );
 }
+
+

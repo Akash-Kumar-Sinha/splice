@@ -1,14 +1,14 @@
 'use client';
 
 import React, { useState } from 'react';
-import { IconTimeline, IconHistory, IconSparkles } from '@tabler/icons-react';
+import { IconTimeline, IconHistory, IconSparkles, IconDatabase } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import HistoryPanel, { Commit, Timeline } from './HistoryPanel';
 import TimelineEditor from './TimelineEditor';
 import SyncStatusPill from './SyncStatusPill';
-
+import StorageCleanupModal from './StorageCleanupModal';
 
 interface AppWorkspaceProps {
   initialCommits: Commit[];
@@ -18,6 +18,7 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
   const [commits, setCommits] = useState<Commit[]>(initialCommits);
   const [activeTab, setActiveTab] = useState<'editor' | 'history'>('editor');
   const [loadedTimeline, setLoadedTimeline] = useState<Timeline | null>(null);
+  const [showStorageModal, setShowStorageModal] = useState(false);
 
   const headCommitId = commits.length > 0 ? commits[0].id : null;
 
@@ -38,7 +39,6 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
     setLoadedTimeline({ ...tl });
     setActiveTab('editor');
   };
-
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden">
@@ -79,6 +79,17 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
         </div>
 
         <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowStorageModal(true)}
+            className="text-xs gap-1.5 border-border hover:bg-muted/40 text-muted-foreground hover:text-foreground"
+            title="Storage Management & Garbage Collection"
+          >
+            <IconDatabase className="size-3.5 text-emerald-400" />
+            <span>Storage & GC</span>
+          </Button>
+          <Separator orientation="vertical" className="h-4" />
           <SyncStatusPill />
           <Separator orientation="vertical" className="h-4" />
           <div className="text-xs text-muted-foreground flex items-center gap-1.5">
@@ -90,9 +101,18 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
         </div>
       </header>
 
+      {/* Storage & Garbage Collection Modal */}
+      <StorageCleanupModal
+        isOpen={showStorageModal}
+        onClose={() => setShowStorageModal(false)}
+        onCleanupCompleted={refreshCommits}
+      />
+
+
 
       {/* Main Content View */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
+
         {activeTab === 'editor' ? (
           <TimelineEditor
             headCommitId={headCommitId}

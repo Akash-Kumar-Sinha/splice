@@ -16,4 +16,7 @@ pub trait CommitStore: Send + Sync {
     fn list_all_commits(&self) -> Result<Vec<Commit>, StoreError>;
     fn save_timeline(&self, commit_id: &CommitId, timeline_json: &str) -> Result<(), StoreError>;
     fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError>;
+    fn remove_commit(&self, id: &CommitId) -> Result<bool, StoreError>;
+    fn remove_commits(&self, ids: &[CommitId]) -> Result<usize, StoreError>;
 }
+

@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -12,7 +14,9 @@ use splice_media::{FsMediaStore, MediaHash, MediaStore};
 
 use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
 use tempfile::tempdir;
+use time::OffsetDateTime;
 use tower::ServiceExt;
+
 
 #[tokio::test]
 async fn test_api_empty_commits() {
@@ -785,4 +789,202 @@ async fn test_api_starring_and_preview_stream() {
         "video/mp4"
     );
 }
+
+#[tokio::test]
+async fn test_api_full_res_export_job_and_download() {
+    let dir = tempdir().expect("tempdir");
+    let media_dir = dir.path().join("media");
+    let media_store = Arc::new(FsMediaStore::init(&media_dir).expect("media store"));
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let store_raw = SqliteCommitStore::open_in_memory().expect("open memory db");
+
+    let sample_file = dir.path().join("test.mp4");
+    let mut f = File::create(&sample_file).unwrap();
+    f.write_all(b"TEST_EXPORT_VIDEO_SAMPLE").unwrap();
+    let sample_hash = media_store.ingest(&sample_file).unwrap();
+
+    let commit = splice_commit::Commit::create(
+        None,
+        "editor".to_string(),
+        "Master Cut".to_string(),
+        MediaHash::compute(b"master_tl"),
+        vec![sample_hash],
+    );
+    let commit_id = store_raw.append(commit).unwrap();
+
+    let commit_store = Arc::new(store_raw);
+    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
+
+    // 1. Submit export job
+    let export_payload = splice_api::ExportRequest {
+        commit_id: Some(commit_id),
+        format: Some(splice_render::ExportFormat::H264),
+        resolution: Some("1080p".to_string()),
+        timeline_raw: None,
+    };
+
+    let post_export_req = Request::builder()
+        .method("POST")
+        .uri(format!("/commits/{commit_id}/export"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&export_payload).unwrap()))
+        .unwrap();
+
+    let post_export_res = app.clone().oneshot(post_export_req).await.unwrap();
+    assert_eq!(post_export_res.status(), StatusCode::OK);
+
+    let export_job: splice_render::ExportJob = serde_json::from_slice(
+        &to_bytes(post_export_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let job_id = export_job.id;
+
+    // 2. Poll job status
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let get_status_req = Request::builder()
+        .method("GET")
+        .uri(format!("/jobs/{job_id}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let status_res = app.clone().oneshot(get_status_req).await.unwrap();
+    assert_eq!(status_res.status(), StatusCode::OK);
+
+    let status_job: splice_render::ExportJob = serde_json::from_slice(
+        &to_bytes(status_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status_job.id, job_id);
+
+    // 3. Download export
+    let download_req = Request::builder()
+        .method("GET")
+        .uri(format!("/exports/{job_id}/download"))
+        .body(Body::empty())
+        .unwrap();
+
+    let download_res = app.oneshot(download_req).await.unwrap();
+    assert_eq!(download_res.status(), StatusCode::OK);
+    assert_eq!(
+        download_res
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "video/mp4"
+    );
+    assert!(
+        download_res
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("attachment")
+    );
+}
+
+#[tokio::test]
+async fn test_api_garbage_collection_estimate_and_run() {
+    let dir = tempdir().expect("tempdir");
+    let media_dir = dir.path().join("media");
+    let media_store = Arc::new(FsMediaStore::init(&media_dir).expect("media store"));
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let store_raw = SqliteCommitStore::open_in_memory().expect("open memory db");
+
+    let file_a = dir.path().join("media_a.mp4");
+    let mut f = File::create(&file_a).unwrap();
+    f.write_all(b"ACTIVE_MEDIA").unwrap();
+    let hash_a = media_store.ingest(&file_a).unwrap();
+
+    let file_b = dir.path().join("media_b.mp4");
+    let mut f = File::create(&file_b).unwrap();
+    f.write_all(b"STALE_MEDIA_DISCARD").unwrap();
+    let hash_b = media_store.ingest(&file_b).unwrap();
+
+    // Active recent commit
+    let recent = splice_commit::Commit::create(
+        None,
+        "editor".to_string(),
+        "Active Save".to_string(),
+        MediaHash::compute(b"tl_active"),
+        vec![hash_a],
+    );
+    let recent_id = store_raw.append(recent).unwrap();
+    store_raw.set_head(&recent_id).unwrap();
+
+    // Stale detached commit (60 days old)
+    let mut stale = splice_commit::Commit::create(
+        None,
+        "editor".to_string(),
+        "Stale Temporary Save".to_string(),
+        MediaHash::compute(b"tl_stale"),
+        vec![hash_b],
+    );
+    stale.timestamp = OffsetDateTime::now_utc() - time::Duration::days(60);
+    let stale_id = store_raw.append(stale).unwrap();
+    store_raw.set_head(&recent_id).unwrap();
+
+    let commit_store = Arc::new(store_raw);
+    let app = router(commit_store, media_store.clone(), thumb_cache, thumbnailer);
+
+    // 1. GC Estimate
+    let est_req = Request::builder()
+        .method("GET")
+        .uri("/gc/estimate")
+        .body(Body::empty())
+        .unwrap();
+
+    let est_res = app.clone().oneshot(est_req).await.unwrap();
+    assert_eq!(est_res.status(), StatusCode::OK);
+
+    let est_report: splice_gc::GcReport = serde_json::from_slice(
+        &to_bytes(est_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(est_report.commits_scanned, 2);
+    assert_eq!(est_report.commits_retained, 1);
+    assert_eq!(est_report.commits_pruned, 1);
+    assert_eq!(est_report.media_pruned, 1);
+    assert!(est_report.dry_run);
+
+    // 2. Run GC
+    let gc_req_payload = splice_api::RetentionPolicyRequest {
+        keep_starred_forever: true,
+        prune_after_days: 30,
+    };
+    let gc_req = Request::builder()
+        .method("POST")
+        .uri("/gc/run")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&gc_req_payload).unwrap()))
+        .unwrap();
+
+    let gc_res = app.oneshot(gc_req).await.unwrap();
+    assert_eq!(gc_res.status(), StatusCode::OK);
+
+    let gc_report: splice_gc::GcReport = serde_json::from_slice(
+        &to_bytes(gc_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(gc_report.commits_pruned, 1);
+    assert_eq!(gc_report.media_pruned, 1);
+    assert!(!gc_report.dry_run);
+
+    assert!(media_store.contains(&hash_a));
+    assert!(!media_store.contains(&hash_b));
+}
+
 

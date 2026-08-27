@@ -1,22 +1,16 @@
 [package]
-name = "splice-render"
+name = "splice-gc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-splice-media.workspace = true
 splice-commit.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tempfile.workspace = true
+splice-media.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
+thiserror.workspace = true
 time.workspace = true
-
-
 
 [dev-dependencies]
 tempfile.workspace = true
