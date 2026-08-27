@@ -8,7 +8,8 @@ use splice_api::{
     UploadResponse, router,
 };
 use splice_commit::{CommitId, CommitStore, SqliteCommitStore, Tag};
-use splice_media::{FsMediaStore, MediaHash};
+use splice_media::{FsMediaStore, MediaHash, MediaStore};
+
 use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -583,3 +584,205 @@ async fn test_api_sync_status_trigger_and_offline() {
     assert_eq!(trig_data.drained_count, 1);
     assert_eq!(trig_data.status.state, splice_sync::SyncState::Synced);
 }
+
+#[tokio::test]
+async fn test_api_squash_commits() {
+    let dir = tempdir().expect("tempdir");
+    let media_store = Arc::new(FsMediaStore::init(dir.path().join("media")).expect("media store"));
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let commit_store = Arc::new(SqliteCommitStore::open_in_memory().expect("open memory db"));
+    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
+
+    // Create 3 commits
+    let m1 = MediaHash::compute(b"media_sq_1");
+    let m2 = MediaHash::compute(b"media_sq_2");
+    let m3 = MediaHash::compute(b"media_sq_3");
+
+    let c1_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/commits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&NewCommitRequest {
+                        parent: None,
+                        author: "alice".to_string(),
+                        message: "Part 1".to_string(),
+                        timeline_hash: MediaHash::compute(b"tl_sq_1"),
+                        media_refs: vec![m1],
+                        timeline_raw: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let c1_id: CommitId =
+        serde_json::from_slice(&to_bytes(c1_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    let c2_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/commits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&NewCommitRequest {
+                        parent: Some(c1_id),
+                        author: "bob".to_string(),
+                        message: "Part 2".to_string(),
+                        timeline_hash: MediaHash::compute(b"tl_sq_2"),
+                        media_refs: vec![m2],
+                        timeline_raw: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let c2_id: CommitId =
+        serde_json::from_slice(&to_bytes(c2_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    let c3_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/commits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&NewCommitRequest {
+                        parent: Some(c2_id),
+                        author: "charlie".to_string(),
+                        message: "Part 3".to_string(),
+                        timeline_hash: MediaHash::compute(b"tl_sq_3"),
+                        media_refs: vec![m3],
+                        timeline_raw: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let c3_id: CommitId =
+        serde_json::from_slice(&to_bytes(c3_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    // Squash c1, c2, c3
+    let squash_req = Request::builder()
+        .method("POST")
+        .uri("/commits/squash")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&splice_api::SquashRequest {
+                commit_ids: vec![c1_id, c2_id, c3_id],
+                message: Some("Complete feature collapsed".to_string()),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+
+    let squash_res = app.clone().oneshot(squash_req).await.unwrap();
+    assert_eq!(squash_res.status(), StatusCode::OK);
+    let squashed_id: CommitId =
+        serde_json::from_slice(&to_bytes(squash_res.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+
+    // Verify commit in store
+    let list_req = Request::builder()
+        .uri("/commits")
+        .body(Body::empty())
+        .unwrap();
+    let list_res = app.oneshot(list_req).await.unwrap();
+    let commits: Vec<CommitResponse> =
+        serde_json::from_slice(&to_bytes(list_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let found = commits.iter().find(|c| c.id == squashed_id).unwrap();
+    assert_eq!(found.message, "Complete feature collapsed");
+    assert_eq!(found.parent, None);
+    assert_eq!(found.timeline_hash, MediaHash::compute(b"tl_sq_3"));
+    assert_eq!(found.media_refs.len(), 3);
+}
+
+#[tokio::test]
+async fn test_api_starring_and_preview_stream() {
+    let dir = tempdir().expect("tempdir");
+    let media_store_dir = dir.path().join("media");
+    std::fs::create_dir_all(&media_store_dir).unwrap();
+
+    // Ingest actual dummy file to media store
+    let media_store = Arc::new(FsMediaStore::init(&media_store_dir).expect("media store"));
+    let raw_file = dir.path().join("sample.mp4");
+    std::fs::write(&raw_file, b"DUMMY_MP4_PAYLOAD").unwrap();
+    let ingested_hash = media_store.ingest(&raw_file).unwrap();
+
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let commit_store = Arc::new(SqliteCommitStore::open_in_memory().expect("open memory db"));
+    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
+
+    // Create commit with media
+    let c_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/commits")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&NewCommitRequest {
+                        parent: None,
+                        author: "tester".to_string(),
+                        message: "Star test".to_string(),
+                        timeline_hash: MediaHash::compute(b"star_tl"),
+                        media_refs: vec![ingested_hash],
+                        timeline_raw: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let c_id: CommitId =
+        serde_json::from_slice(&to_bytes(c_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    // Tag commit as starred
+    let star_req = Request::builder()
+        .method("POST")
+        .uri(format!("/commits/{c_id}/tags"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&TagRequest {
+                label: "starred".to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let star_res = app.clone().oneshot(star_req).await.unwrap();
+    assert_eq!(star_res.status(), StatusCode::CREATED);
+
+    // Stream preview.mp4
+    let preview_req = Request::builder()
+        .method("GET")
+        .uri(format!("/commits/{c_id}/preview.mp4"))
+        .body(Body::empty())
+        .unwrap();
+    let preview_res = app.oneshot(preview_req).await.unwrap();
+    assert_eq!(preview_res.status(), StatusCode::OK);
+    assert_eq!(
+        preview_res
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "video/mp4"
+    );
+}
+

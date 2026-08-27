@@ -30,7 +30,11 @@ import {
   IconChevronRight,
   IconSparkles,
   IconDownload,
+  IconGitMerge,
+  IconSquare,
+  IconSquareCheckFilled,
 } from '@tabler/icons-react';
+
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -195,6 +199,61 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [saveAsMessage, setSaveAsMessage] = useState<string>('Alternate version cut');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  // Multi-Select & Squash state
+  const [selectedForSquash, setSelectedForSquash] = useState<string[]>([]);
+  const [showSquashModal, setShowSquashModal] = useState<boolean>(false);
+  const [squashMessage, setSquashMessage] = useState<string>('');
+  const [isSquashing, setIsSquashing] = useState<boolean>(false);
+
+  const handleToggleSelectForSquash = (commitId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setSelectedForSquash((prev) =>
+      prev.includes(commitId) ? prev.filter((id) => id !== commitId) : [...prev, commitId]
+    );
+  };
+
+  const handleOpenSquashModal = () => {
+    if (selectedForSquash.length < 2) return;
+    const selectedCommits = commits.filter((c) => selectedForSquash.includes(c.id));
+    selectedCommits.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    const msgs = selectedCommits.map((c) => `- ${c.message}`).join('\n');
+    setSquashMessage(`Squashed ${selectedCommits.length} versions:\n${msgs}`);
+    setShowSquashModal(true);
+  };
+
+  const handleConfirmSquash = async () => {
+    if (selectedForSquash.length < 2 || !squashMessage.trim()) return;
+    setIsSquashing(true);
+    try {
+      const res = await fetch(`${API_URL}/commits/squash`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commit_ids: selectedForSquash,
+          message: squashMessage.trim(),
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Squash failed with HTTP ${res.status}`);
+      }
+
+      const newId: string = await res.json();
+      setStatusMessage(`Squashed ${selectedForSquash.length} versions into one`);
+      setSelectedForSquash([]);
+      setShowSquashModal(false);
+      await refreshAll();
+      await handleSelectCommit(newId, 'preview');
+    } catch (err) {
+      console.error('Error during squash:', err);
+      setStatusMessage('Error collapsing versions');
+    } finally {
+      setIsSquashing(false);
+    }
+  };
+
   const fetchCommits = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/commits`, { cache: 'no-store' });
@@ -209,6 +268,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
       console.error('Error refreshing commits:', err);
     }
   }, []);
+
 
   const fetchTree = useCallback(async () => {
     try {
@@ -538,6 +598,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const renderTreeNode = (node: CommitTreeNode) => {
     const commit = node.commit;
     const isSelected = selectedCommitId === commit.id;
+    const isSelectedForSquash = selectedForSquash.includes(commit.id);
     const isHead = activeHeadId === commit.id;
     const hasChildren = node.children && node.children.length > 0;
     const isCollapsed = collapsedNodeIds.has(node.commit.id);
@@ -590,13 +651,34 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               isSelected && !isDiffMode
                 ? 'bg-card border-primary/70 shadow-sm'
                 : 'bg-card/20 hover:bg-card/60 border-border/40',
+              isSelectedForSquash && 'ring-1 ring-primary/80 border-primary/60 bg-primary/5',
               isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
               isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
             )}
           >
-            <div className="flex gap-2.5 items-center">
+            <div className="flex gap-2 items-center">
+              {/* Squash Selection Checkbox */}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={(e) => handleToggleSelectForSquash(commit.id, e)}
+                className={cn(
+                  'size-5 shrink-0 rounded transition-all',
+                  isSelectedForSquash
+                    ? 'text-primary bg-primary/15'
+                    : 'text-muted-foreground/40 hover:text-muted-foreground'
+                )}
+                title={isSelectedForSquash ? 'Deselect from squash' : 'Select to squash'}
+              >
+                {isSelectedForSquash ? (
+                  <IconSquareCheckFilled className="size-3.5 text-primary" />
+                ) : (
+                  <IconSquare className="size-3.5" />
+                )}
+              </Button>
+
               {/* Mini Frame Thumbnail */}
-              <div className="relative size-10 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+              <div className="relative size-9 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
                 <img
                   src={`${API_URL}/commits/${commit.id}/thumbnail`}
                   alt="Thumbnail"
@@ -639,7 +721,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                       e.stopPropagation();
                       handleToggleStar(commit);
                     }}
-                    title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
+                    title={hasStarTag ? 'Remove Star Tag' : 'Star (Picture Lock) & Proxy Render'}
                     className="size-5 hover:text-amber-400"
                   >
                     {hasStarTag ? (
@@ -672,6 +754,35 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               </div>
             )}
 
+            {/* Inline Video Player Preview on Starred Cards */}
+            {hasStarTag && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="mt-1.5 rounded-lg overflow-hidden border border-amber-500/30 bg-black aspect-video relative group shadow-sm"
+              >
+                <VideoPlayer className="w-full h-full rounded-lg overflow-hidden">
+                  <video
+                    slot="media"
+                    src={`${API_URL}/commits/${commit.id}/preview.mp4`}
+                    className="w-full h-full object-contain"
+                    playsInline
+                    preload="metadata"
+                  />
+                  <VideoPlayerControlBar>
+                    <VideoPlayerPlayButton />
+                    <VideoPlayerTimeRange />
+                    <VideoPlayerTimeDisplay showDuration />
+                    <VideoPlayerMuteButton />
+                    <VideoPlayerVolumeRange />
+                  </VideoPlayerControlBar>
+                </VideoPlayer>
+                <div className="absolute top-1.5 right-1.5 pointer-events-none z-10 flex items-center gap-1 bg-amber-500/90 text-black font-mono text-[8px] font-bold px-1.5 py-0.5 rounded shadow">
+                  <IconStarFilled className="size-2.5" />
+                  <span>INSTANT PROXY</span>
+                </div>
+              </div>
+            )}
+
             {/* Collapsed Branch Count Indicator */}
             {hasChildren && isCollapsed && (
               <div className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono pt-0.5">
@@ -681,6 +792,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             )}
           </div>
         </div>
+
 
         {/* Recursive Children (rendered when not collapsed) */}
         {hasChildren && !isCollapsed && (
@@ -694,11 +806,15 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
 
 
   return (
-    <SidebarProvider className="h-full">
-      <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans">
+    <SidebarProvider
+      className="h-full min-h-0 w-full overflow-hidden"
+      style={{ "--sidebar-width": "22rem", "--sidebar-width-mobile": "18rem" } as React.CSSProperties}
+    >
+      <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans relative">
         {/* Sidebar: Version History & Saves */}
-        <Sidebar className="border-r border-border bg-card/40 w-96 shrink-0" collapsible="offcanvas">
+        <Sidebar className="border-r border-border bg-card/40" collapsible="offcanvas">
           <SidebarHeader className="p-3 border-b border-border flex flex-col gap-2.5">
+
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
@@ -811,7 +927,35 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             </div>
           </SidebarHeader>
 
-          <SidebarContent className="p-0">
+          <SidebarContent className="p-0 flex flex-col">
+            {/* Sticky Squash Selected Action Bar */}
+            {selectedForSquash.length >= 2 && (
+              <div className="p-2.5 bg-primary/15 border-b border-primary/30 flex items-center justify-between gap-2 shrink-0 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center gap-1.5 text-xs font-mono">
+                  <IconGitMerge className="size-4 text-primary" />
+                  <span className="font-bold text-foreground">{selectedForSquash.length} selected</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="default"
+                    size="xs"
+                    onClick={handleOpenSquashModal}
+                    className="font-bold text-[11px] h-6 px-2 shadow bg-primary hover:bg-primary/90 text-primary-foreground"
+                  >
+                    Squash Selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setSelectedForSquash([])}
+                    className="text-[10px] h-6 px-1.5 text-muted-foreground hover:text-foreground"
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <ScrollArea className="h-full w-full p-2">
               <SidebarGroup className="p-0">
                 <SidebarGroupLabel className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
@@ -841,6 +985,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                       ) : (
                         filteredCommits.map((commit, i) => {
                           const isSelected = selectedCommitId === commit.id;
+                          const isSelectedForSquash = selectedForSquash.includes(commit.id);
                           const isHead = activeHeadId === commit.id;
                           const hasStarTag =
                             commit.tags?.includes('Picture Lock') ||
@@ -852,78 +997,146 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                               <div
                                 onClick={() => handleSelectCommit(commit.id, 'preview')}
                                 className={cn(
-                                  'group/item flex items-center justify-between p-2 rounded-xl border text-xs cursor-pointer transition-all w-full select-none',
+                                  'group/item flex flex-col p-2.5 rounded-xl border text-xs cursor-pointer transition-all w-full select-none gap-2',
                                   isSelected
                                     ? 'bg-accent border-primary/50 text-accent-foreground shadow-sm'
-                                    : 'bg-card/40 border-border text-foreground hover:bg-accent/40'
+                                    : 'bg-card/40 border-border text-foreground hover:bg-accent/40',
+                                  isSelectedForSquash && 'ring-1 ring-primary/80 border-primary/60 bg-primary/5'
                                 )}
                               >
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
-                                    <img
-                                      src={`${API_URL}/commits/${commit.id}/thumbnail`}
-                                      alt={commit.message}
-                                      className="size-full object-cover"
-                                      onError={(e) => {
-                                        e.currentTarget.style.display = 'none';
-                                      }}
-                                    />
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-[9px] font-mono text-muted-foreground">
-                                      #{filteredCommits.length - i}
-                                    </div>
-                                  </div>
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {/* Squash Selection Checkbox */}
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      onClick={(e) => handleToggleSelectForSquash(commit.id, e)}
+                                      className={cn(
+                                        'size-5 shrink-0 rounded transition-all',
+                                        isSelectedForSquash
+                                          ? 'text-primary bg-primary/15'
+                                          : 'text-muted-foreground/40 hover:text-muted-foreground'
+                                      )}
+                                      title={isSelectedForSquash ? 'Deselect from squash' : 'Select to squash'}
+                                    >
+                                      {isSelectedForSquash ? (
+                                        <IconSquareCheckFilled className="size-3.5 text-primary" />
+                                      ) : (
+                                        <IconSquare className="size-3.5" />
+                                      )}
+                                    </Button>
 
-                                  <div className="flex flex-col min-w-0">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="font-semibold text-foreground truncate max-w-[140px]">
-                                        {commit.message}
-                                      </span>
-                                      {isHead && (
-                                        <Badge
-                                          variant="default"
-                                          className="text-[9px] px-1 py-0 font-mono h-4 shrink-0"
-                                        >
-                                          HEAD
-                                        </Badge>
-                                      )}
-                                      {hasStarTag && (
-                                        <IconStarFilled className="size-3 text-amber-400 shrink-0" />
-                                      )}
-                                    </div>
-                                    <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1.5 mt-0.5">
-                                      <span>{commit.id.slice(0, 7)}</span>
-                                      <span>•</span>
-                                      <span>{formatDate(commit.timestamp)}</span>
-                                    </div>
-                                    {commit.tags && commit.tags.length > 0 && (
-                                      <div className="flex flex-wrap gap-1 mt-1">
-                                        {commit.tags.map((t) => (
-                                          <Badge
-                                            key={t}
-                                            variant="secondary"
-                                            className="text-[8px] px-1 py-0 h-3.5"
-                                          >
-                                            {t}
-                                          </Badge>
-                                        ))}
+                                    <div className="relative size-10 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+                                      <img
+                                        src={`${API_URL}/commits/${commit.id}/thumbnail`}
+                                        alt={commit.message}
+                                        className="size-full object-cover"
+                                        onError={(e) => {
+                                          e.currentTarget.style.display = 'none';
+                                        }}
+                                      />
+                                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-[9px] font-mono text-muted-foreground">
+                                        #{filteredCommits.length - i}
                                       </div>
-                                    )}
+                                    </div>
+
+                                    <div className="flex flex-col min-w-0">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-semibold text-foreground truncate max-w-[130px]">
+                                          {commit.message}
+                                        </span>
+                                        {isHead && (
+                                          <Badge
+                                            variant="default"
+                                            className="text-[9px] px-1 py-0 font-mono h-4 shrink-0"
+                                          >
+                                            HEAD
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1.5 mt-0.5">
+                                        <span>{commit.id.slice(0, 7)}</span>
+                                        <span>•</span>
+                                        <span>{formatDate(commit.timestamp)}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleStar(commit);
+                                      }}
+                                      title={hasStarTag ? 'Remove Star Tag' : 'Star & Proxy Render'}
+                                      className="size-5 hover:text-amber-400"
+                                    >
+                                      {hasStarTag ? (
+                                        <IconStarFilled className="size-3.5 text-amber-400" />
+                                      ) : (
+                                        <IconStar className="size-3.5 text-muted-foreground" />
+                                      )}
+                                    </Button>
+
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenDiffWithCommit(commit.id);
+                                      }}
+                                      title="Compare vs Active"
+                                    >
+                                      <IconGitCompare className="size-3.5" />
+                                    </Button>
                                   </div>
                                 </div>
 
-                                <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-xs"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenDiffWithCommit(commit.id);
-                                    }}
-                                    title="Compare vs Active"
+                                {commit.tags && commit.tags.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {commit.tags.map((t) => (
+                                      <Badge
+                                        key={t}
+                                        variant="secondary"
+                                        className="font-mono text-[8px] px-1.5 py-0 h-3.5 gap-0.5 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                      >
+                                        <IconTag className="size-2" />
+                                        {t}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Inline Video Player Preview on Starred Cards */}
+                                {hasStarTag && (
+                                  <div
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="mt-1 rounded-lg overflow-hidden border border-amber-500/30 bg-black aspect-video relative group shadow-sm"
                                   >
-                                    <IconGitCompare className="size-3.5" />
-                                  </Button>
-                                </div>
+                                    <VideoPlayer className="w-full h-full rounded-lg overflow-hidden">
+                                      <video
+                                        slot="media"
+                                        src={`${API_URL}/commits/${commit.id}/preview.mp4`}
+                                        className="w-full h-full object-contain"
+                                        playsInline
+                                        preload="metadata"
+                                      />
+                                      <VideoPlayerControlBar>
+                                        <VideoPlayerPlayButton />
+                                        <VideoPlayerTimeRange />
+                                        <VideoPlayerTimeDisplay showDuration />
+                                        <VideoPlayerMuteButton />
+                                        <VideoPlayerVolumeRange />
+                                      </VideoPlayerControlBar>
+                                    </VideoPlayer>
+                                    <div className="absolute top-1.5 right-1.5 pointer-events-none z-10 flex items-center gap-1 bg-amber-500/90 text-black font-mono text-[8px] font-bold px-1.5 py-0.5 rounded shadow">
+                                      <IconStarFilled className="size-2.5" />
+                                      <span>INSTANT PROXY</span>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </SidebarMenuItem>
                           );
@@ -935,6 +1148,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               </SidebarGroup>
             </ScrollArea>
           </SidebarContent>
+
 
           <SidebarFooter className="p-3 border-t border-border flex flex-col gap-2">
             <Button variant="outline" size="sm" onClick={() => refreshAll()} className="w-full">
@@ -1175,13 +1389,12 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                         />
                         <VideoPlayerControlBar>
                           <VideoPlayerPlayButton />
-                          <VideoPlayerSeekBackwardButton />
-                          <VideoPlayerSeekForwardButton />
                           <VideoPlayerTimeRange />
                           <VideoPlayerTimeDisplay showDuration />
                           <VideoPlayerMuteButton />
                           <VideoPlayerVolumeRange />
                         </VideoPlayerControlBar>
+
                       </VideoPlayer>
                     ) : (
                       <div className="text-muted-foreground text-xs flex flex-col items-center gap-2 p-8">
@@ -1458,7 +1671,88 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
           </ScrollArea>
         </SidebarInset>
 
+        {/* Squash Selected Commits Modal Dialog */}
+        {showSquashModal && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-card border border-border rounded-2xl p-6 max-w-lg w-full shadow-2xl flex flex-col gap-4 animate-in fade-in zoom-in-95">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 rounded-xl bg-primary/10 text-primary">
+                    <IconGitMerge className="size-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-foreground">Squash Selected Versions</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Collapse {selectedForSquash.length} historical checkpoints into one clean version.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setShowSquashModal(false)}
+                >
+                  ✕
+                </Button>
+              </div>
+
+              {/* List of commits being squashed */}
+              <div className="bg-background/80 border border-border rounded-xl p-3 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+                <div className="text-[10px] font-mono text-muted-foreground uppercase font-bold">
+                  Versions to be collapsed ({selectedForSquash.length}):
+                </div>
+                {commits
+                  .filter((c) => selectedForSquash.includes(c.id))
+                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                  .map((c, idx) => (
+                    <div key={c.id} className="text-xs font-mono flex items-center gap-2 text-foreground">
+                      <span className="text-primary font-bold">{idx + 1}.</span>
+                      <span className="truncate flex-1">{c.message}</span>
+                      <span className="text-[10px] text-muted-foreground shrink-0">{c.id.slice(0, 7)}</span>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Editable Summary Message */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-foreground">
+                  Squashed Version Message / Summary:
+                </label>
+                <textarea
+                  rows={4}
+                  value={squashMessage}
+                  onChange={(e) => setSquashMessage(e.target.value)}
+                  placeholder="Describe the combined changes in this squashed version..."
+                  className="w-full bg-background border border-border rounded-xl p-3 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowSquashModal(false)}
+                  disabled={isSquashing}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleConfirmSquash}
+                  disabled={isSquashing || !squashMessage.trim()}
+                  className="font-bold gap-1.5 shadow"
+                >
+                  {isSquashing ? <Spinner className="size-3.5" /> : <IconGitMerge className="size-4" />}
+                  {isSquashing ? 'Squashing...' : 'Confirm Squash'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </SidebarProvider>
   );
 }
+

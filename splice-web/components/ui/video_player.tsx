@@ -43,17 +43,20 @@ export const VideoPlayer = ({ className, style, ...props }: VideoPlayerProps) =>
 
 export type VideoPlayerControlBarProps = ComponentProps<typeof MediaControlBar>
 
-export const VideoPlayerControlBar = (props: VideoPlayerControlBarProps) => (
-  <MediaControlBar {...(props as any)} />
+export const VideoPlayerControlBar = ({ className, ...props }: VideoPlayerControlBarProps) => (
+  <MediaControlBar className={cn("w-full flex items-center", className)} {...(props as any)} />
 )
-
-
 
 export type VideoPlayerTimeRangeProps = ComponentProps<typeof MediaTimeRange>
 
-export const VideoPlayerTimeRange = ({ className, ...props }: VideoPlayerTimeRangeProps) => (
-  <MediaTimeRange className={cn("p-2.5", className)} {...(props as any)} />
+export const VideoPlayerTimeRange = ({ className, style, ...props }: VideoPlayerTimeRangeProps) => (
+  <MediaTimeRange
+    className={cn("p-2.5 flex-1 min-w-[80px]", className)}
+    style={{ flex: "1 1 auto", minWidth: "80px", ...style }}
+    {...(props as any)}
+  />
 )
+
 
 export type VideoPlayerTimeDisplayProps = ComponentProps<typeof MediaTimeDisplay>
 

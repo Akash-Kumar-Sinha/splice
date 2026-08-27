@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ThumbError {
-    #[error("I/O error during thumbnail generation: {0}")]
+pub enum RenderError {
+    #[error("I/O error during rendering: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("FFmpeg execution failed: {0}")]
@@ -14,4 +14,12 @@ pub enum ThumbError {
 
     #[error("Media store error: {0}")]
     Media(#[from] splice_media::StoreError),
+
+    #[error("Empty timeline - no clips to render")]
+    EmptyTimeline,
+
+    #[error("Media not found: {0}")]
+    MediaNotFound(String),
 }
+
+pub type ThumbError = RenderError;

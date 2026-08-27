@@ -18,7 +18,8 @@ use splice_commit::{Commit, CommitId, CommitStore, CommitTreeNode, StoreError, T
 use splice_diff::TimelineDiff;
 use splice_media::{MediaHash, MediaStore};
 use splice_render::{
-    FfmpegThumbnailer, FsThumbnailCache, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
+    FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, LowResProxyRenderer, ProxyRenderer,
+    ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
 };
 use splice_sync::{S3RemoteStore, SyncEngine, SyncError, SyncStatusReport};
 
@@ -41,6 +42,8 @@ pub struct AppState {
     pub thumbnail_generator: Arc<dyn ThumbnailGenerator>,
     pub thumbnail_queue: ThumbnailQueue,
     pub sync_engine: Arc<SyncEngine>,
+    pub proxy_cache: FsProxyCache,
+    pub proxy_renderer: Arc<dyn ProxyRenderer>,
 }
 
 impl AppState {
@@ -74,6 +77,30 @@ impl AppState {
         thumbnail_generator: Arc<dyn ThumbnailGenerator>,
         sync_engine: Arc<SyncEngine>,
     ) -> Self {
+        let proxy_renderer: Arc<dyn ProxyRenderer> =
+            Arc::new(LowResProxyRenderer::new(".media_store", ".proxy_cache"));
+        let proxy_cache = FsProxyCache::new(".proxy_cache", proxy_renderer.clone());
+
+        Self::new_with_all(
+            commit_store,
+            media_store,
+            thumbnail_cache,
+            thumbnail_generator,
+            sync_engine,
+            proxy_cache,
+            proxy_renderer,
+        )
+    }
+
+    pub fn new_with_all(
+        commit_store: Arc<dyn CommitStore>,
+        media_store: Arc<dyn MediaStore>,
+        thumbnail_cache: FsThumbnailCache,
+        thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+        sync_engine: Arc<SyncEngine>,
+        proxy_cache: FsProxyCache,
+        proxy_renderer: Arc<dyn ProxyRenderer>,
+    ) -> Self {
         let thumbnail_queue =
             ThumbnailQueue::new(thumbnail_cache.clone(), thumbnail_generator.clone(), 64);
 
@@ -84,9 +111,12 @@ impl AppState {
             thumbnail_generator,
             thumbnail_queue,
             sync_engine,
+            proxy_cache,
+            proxy_renderer,
         }
     }
 }
+
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct NewCommitRequest {
@@ -167,6 +197,14 @@ pub struct TagRequest {
 pub struct OfflineToggleRequest {
     pub offline: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SquashRequest {
+    pub commit_ids: Vec<CommitId>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncTriggerResponse {
@@ -613,9 +651,29 @@ pub async fn add_commit_tag(
             "Tag label cannot be empty".to_string(),
         ));
     }
-    state.commit_store.add_tag(Tag::new(id, req.label.trim()))?;
+    let label = req.label.trim();
+    state.commit_store.add_tag(Tag::new(id, label))?;
+
+    // CRITICAL: On starring a commit, kick off low-res proxy render job in background
+    if label.eq_ignore_ascii_case("starred") || label.eq_ignore_ascii_case("star") {
+        if let Ok(commit) = state.commit_store.get(&id) {
+            let timeline = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
+                if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+                    Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false)
+                        .to_splice_commit_timeline()
+                } else {
+                    splice_commit::Timeline::from_commit(&commit)
+                }
+            } else {
+                splice_commit::Timeline::from_commit(&commit)
+            };
+            state.proxy_cache.kick_off_background_render(timeline);
+        }
+    }
+
     Ok(StatusCode::CREATED)
 }
+
 
 pub async fn remove_commit_tag(
     State(state): State<AppState>,
@@ -760,6 +818,104 @@ pub async fn export_commit_video(
     .await
 }
 
+pub async fn squash_commits(
+    State(state): State<AppState>,
+    Json(req): Json<SquashRequest>,
+) -> Result<Json<CommitId>, ApiError> {
+    if req.commit_ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one commit ID is required to squash".to_string(),
+        ));
+    }
+
+    let mut commits = Vec::with_capacity(req.commit_ids.len());
+    for id in &req.commit_ids {
+        commits.push(state.commit_store.get(id)?);
+    }
+
+    // INFO: Sort commits chronologically from oldest to newest
+    commits.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    let latest_commit = commits.last().ok_or_else(|| {
+        ApiError::BadRequest("No commits found to squash".to_string())
+    })?;
+    let latest_id = latest_commit.id;
+
+    let mut squashed = splice_commit::squash(&commits);
+    if let Some(msg) = req.message {
+        if !msg.trim().is_empty() {
+            squashed.message = msg.trim().to_string();
+        }
+    }
+
+    let new_id = state.commit_store.append(squashed)?;
+
+    // INFO: Copy timeline JSON from latest commit if present
+    if let Ok(Some(tl_json)) = state.commit_store.get_timeline(&latest_id) {
+        let _ = state.commit_store.save_timeline(&new_id, &tl_json);
+    }
+
+    state.sync_engine.enqueue(new_id).await;
+
+    Ok(Json(new_id))
+}
+
+pub async fn stream_commit_preview(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<CommitId>,
+    req: Request<Body>,
+) -> Result<Response, ApiError> {
+    let commit = state.commit_store.get(&id)?;
+
+    let timeline = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
+        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+            Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false)
+                .to_splice_commit_timeline()
+        } else {
+            splice_commit::Timeline::from_commit(&commit)
+        }
+    } else {
+        splice_commit::Timeline::from_commit(&commit)
+    };
+
+    let proxy_path = match state.proxy_cache.render_or_get(&timeline) {
+        Ok(p) => p,
+        Err(e) => {
+            // INFO: Fallback to direct media file if available
+            if let Some(media_hash) = commit.media_refs.first() {
+                if let Some(path) = state.media_store.resolve(media_hash) {
+                    path
+                } else {
+                    return Err(ApiError::from(e));
+                }
+            } else {
+                return Err(ApiError::from(e));
+            }
+        }
+    };
+
+    let service = ServeFile::new(&proxy_path);
+    let mut res = match service.oneshot(req).await {
+        Ok(res) => res,
+        Err(never) => match never {},
+    };
+
+    let is_octet_stream = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .map(|v| v == "application/octet-stream" || v == "text/plain")
+        .unwrap_or(true);
+
+    if is_octet_stream {
+        res.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("video/mp4"),
+        );
+    }
+
+    Ok(res.into_response())
+}
+
 pub fn router(
     commit_store: Arc<dyn CommitStore>,
     media_store: Arc<dyn MediaStore>,
@@ -798,11 +954,14 @@ pub fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/commits", get(list_commits).post(create_commit))
         .route("/commits/tree", get(get_commit_tree))
+        .route("/commits/squash", post(squash_commits))
         .route("/commits/save-as", post(save_as_new_version))
         .route("/commits/diff", get(get_commits_diff))
         .route("/diff", post(compute_timeline_diff))
         .route("/commits/:id/revert", post(revert).get(revert))
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
+        .route("/commits/:id/preview.mp4", get(stream_commit_preview))
+        .route("/commits/:id/preview", get(stream_commit_preview))
         .route("/commits/:id/tags", post(add_commit_tag))
         .route("/commits/:id/tags/:label", delete(remove_commit_tag))
         .route("/commits/:id/export", get(export_commit_video))
@@ -817,3 +976,4 @@ pub fn router_with_state(state: AppState) -> Router {
         .layer(cors)
         .with_state(state)
 }
+
