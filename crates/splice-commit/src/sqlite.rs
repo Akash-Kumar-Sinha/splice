@@ -1,0 +1,384 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::Mutex;
+
+use rusqlite::{Connection, OptionalExtension, params};
+use splice_media::MediaHash;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
+use crate::commit::Commit;
+use crate::error::StoreError;
+use crate::id::CommitId;
+use crate::store::CommitStore;
+
+pub struct SqliteCommitStore {
+    conn: Mutex<Connection>,
+}
+
+impl SqliteCommitStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let conn = Connection::open(path)?;
+        Self::init_db(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    pub fn open_in_memory() -> Result<Self, StoreError> {
+        let conn = Connection::open_in_memory()?;
+        Self::init_db(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn init_db(conn: &Connection) -> Result<(), StoreError> {
+        // INFO: SQLite WAL mode improves concurrent reads while ensuring crash resilience
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS commits (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT,
+                timestamp TEXT NOT NULL,
+                author TEXT NOT NULL,
+                message TEXT NOT NULL,
+                timeline_hash TEXT NOT NULL,
+                media_refs TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS refs (
+                name TEXT PRIMARY KEY,
+                commit_id TEXT NOT NULL REFERENCES commits(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_id);",
+        )?;
+
+        Ok(())
+    }
+
+    fn get_internal(conn: &Connection, id: &CommitId) -> Result<Commit, StoreError> {
+        let id_str = id.to_string();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, parent_id, timestamp, author, message, timeline_hash, media_refs
+             FROM commits
+             WHERE id = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![id_str])?;
+        let row = match rows.next()? {
+            Some(row) => row,
+            None => return Err(StoreError::CommitNotFound(*id)),
+        };
+
+        let row_id_str: String = row.get(0)?;
+        let row_parent_str: Option<String> = row.get(1)?;
+        let row_ts_str: String = row.get(2)?;
+        let author: String = row.get(3)?;
+        let message: String = row.get(4)?;
+        let timeline_hash_str: String = row.get(5)?;
+        let media_refs_str: String = row.get(6)?;
+
+        let commit_id = CommitId::from_str(&row_id_str)
+            .map_err(|e| StoreError::Time(format!("invalid commit id: {e}")))?;
+
+        let parent = match row_parent_str {
+            Some(s) => Some(
+                CommitId::from_str(&s)
+                    .map_err(|e| StoreError::Time(format!("invalid parent commit id: {e}")))?,
+            ),
+            None => None,
+        };
+
+        let timestamp = OffsetDateTime::parse(&row_ts_str, &Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+
+        let timeline_hash = MediaHash::from_hex(&timeline_hash_str)
+            .map_err(|e| StoreError::InvalidHash(e.to_string()))?;
+
+        let media_refs: Vec<MediaHash> = serde_json::from_str(&media_refs_str)?;
+
+        Ok(Commit {
+            id: commit_id,
+            parent,
+            timestamp,
+            author,
+            message,
+            timeline_hash,
+            media_refs,
+        })
+    }
+
+    pub fn head_id(&self) -> Result<Option<CommitId>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached("SELECT commit_id FROM refs WHERE name = 'HEAD'")?;
+        let head_str: Option<String> = stmt.query_row([], |row| row.get(0)).optional()?;
+        match head_str {
+            Some(s) => {
+                let id = CommitId::from_str(&s)
+                    .map_err(|e| StoreError::Time(format!("invalid head commit id: {e}")))?;
+                Ok(Some(id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn head(&self) -> Result<Option<Commit>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached("SELECT commit_id FROM refs WHERE name = 'HEAD'")?;
+        let head_str: Option<String> = stmt.query_row([], |row| row.get(0)).optional()?;
+        match head_str {
+            Some(s) => {
+                let id = CommitId::from_str(&s)
+                    .map_err(|e| StoreError::Time(format!("invalid head commit id: {e}")))?;
+                let commit = Self::get_internal(&conn, &id)?;
+                Ok(Some(commit))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn contains(&self, id: &CommitId) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+        let exists: bool = stmt
+            .query_row(params![id.to_string()], |_| Ok(true))
+            .optional()?
+            .unwrap_or(false);
+        Ok(exists)
+    }
+
+    pub fn len(&self) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM commits")?;
+        let count: i64 = stmt.query_row([], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
+    pub fn set_head(&self, id: &CommitId) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let _ = Self::get_internal(&conn, id)?;
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO refs (name, commit_id)
+             VALUES ('HEAD', ?1)
+             ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+        )?;
+        stmt.execute(params![id.to_string()])?;
+        Ok(())
+    }
+}
+
+impl CommitStore for SqliteCommitStore {
+    fn append(&self, commit: Commit) -> Result<CommitId, StoreError> {
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+
+        let id_str = commit.id.to_string();
+        {
+            let mut stmt = tx.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+            let exists = stmt
+                .query_row(params![&id_str], |_| Ok(true))
+                .optional()?
+                .unwrap_or(false);
+            if exists {
+                return Err(StoreError::DuplicateCommit(commit.id));
+            }
+        }
+
+        if let Some(parent_id) = commit.parent {
+            let mut stmt = tx.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+            let parent_str = parent_id.to_string();
+            let parent_exists = stmt
+                .query_row(params![&parent_str], |_| Ok(true))
+                .optional()?
+                .unwrap_or(false);
+            if !parent_exists {
+                return Err(StoreError::ParentNotFound(parent_id));
+            }
+        }
+
+        let parent_id_str = commit.parent.map(|p| p.to_string());
+        let ts_str = commit
+            .timestamp
+            .format(&Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+        let timeline_hash_str = commit.timeline_hash.to_hex();
+        let media_refs_json = serde_json::to_string(&commit.media_refs)?;
+
+        {
+            let mut insert_commit = tx.prepare_cached(
+                "INSERT INTO commits (id, parent_id, timestamp, author, message, timeline_hash, media_refs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            insert_commit.execute(params![
+                id_str,
+                parent_id_str,
+                ts_str,
+                commit.author,
+                commit.message,
+                timeline_hash_str,
+                media_refs_json,
+            ])?;
+        }
+
+        {
+            let mut update_head = tx.prepare_cached(
+                "INSERT INTO refs (name, commit_id)
+                 VALUES ('HEAD', ?1)
+                 ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+            )?;
+            update_head.execute(params![id_str])?;
+        }
+
+        tx.commit()?;
+        Ok(commit.id)
+    }
+
+    fn get(&self, id: &CommitId) -> Result<Commit, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        Self::get_internal(&conn, id)
+    }
+
+    fn chain_from_head(&self) -> Result<Vec<Commit>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached("SELECT commit_id FROM refs WHERE name = 'HEAD'")?;
+        let head_str: Option<String> = stmt.query_row([], |row| row.get(0)).optional()?;
+
+        let head_id = match head_str {
+            Some(s) => CommitId::from_str(&s)
+                .map_err(|e| StoreError::Time(format!("invalid head commit id: {e}")))?,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut chain = Vec::new();
+        let mut visited = HashSet::new();
+        let mut current_id = head_id;
+
+        loop {
+            // CRITICAL: Detect cycles during parent-chain traversal to guarantee termination
+            if !visited.insert(current_id) {
+                return Err(StoreError::CycleDetected(current_id));
+            }
+
+            let commit = Self::get_internal(&conn, &current_id)?;
+            let next_parent = commit.parent;
+            chain.push(commit);
+
+            match next_parent {
+                Some(parent_id) => current_id = parent_id,
+                None => break,
+            }
+        }
+
+        Ok(chain)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_in_memory_store_basic() {
+        let store = SqliteCommitStore::open_in_memory().expect("open memory store");
+        assert!(store.is_empty().expect("is_empty"));
+
+        let th = MediaHash::compute(b"timeline 0");
+        let commit0 = Commit::create(None, "Author", "Init", th, vec![]);
+        let id0 = commit0.id;
+        store.append(commit0.clone()).expect("append 0");
+
+        assert_eq!(store.len().expect("len"), 1);
+        assert_eq!(store.head_id().expect("head_id"), Some(id0));
+
+        let retrieved = store.get(&id0).expect("get 0");
+        assert_eq!(retrieved.id, id0);
+        assert_eq!(retrieved.message, "Init");
+
+        let th1 = MediaHash::compute(b"timeline 1");
+        let commit1 = Commit::create(Some(id0), "Author", "Second", th1, vec![]);
+        let id1 = commit1.id;
+        store.append(commit1).expect("append 1");
+
+        let chain = store.chain_from_head().expect("chain");
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].id, id1);
+        assert_eq!(chain[1].id, id0);
+    }
+
+    #[test]
+    fn test_parent_not_found() {
+        let store = SqliteCommitStore::open_in_memory().expect("open memory store");
+        let non_existent_parent = CommitId::new();
+        let commit = Commit::create(
+            Some(non_existent_parent),
+            "Author",
+            "Broken commit",
+            MediaHash::compute(b"t"),
+            vec![],
+        );
+
+        let err = store.append(commit).unwrap_err();
+        match err {
+            StoreError::ParentNotFound(id) => assert_eq!(id, non_existent_parent),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicate_commit() {
+        let store = SqliteCommitStore::open_in_memory().expect("open memory store");
+        let commit = Commit::create(None, "Author", "Root", MediaHash::compute(b"t"), vec![]);
+        store.append(commit.clone()).expect("append 1");
+        let err = store.append(commit).unwrap_err();
+        match err {
+            StoreError::DuplicateCommit(_) => (),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_50_saves_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("splice.db");
+
+        let mut expected_ids = Vec::new();
+        {
+            let store = SqliteCommitStore::open(&db_path).expect("open store");
+            let mut parent = None;
+            for i in 0..50 {
+                let th = MediaHash::compute(format!("timeline {i}").as_bytes());
+                let media = vec![MediaHash::compute(format!("media {i}").as_bytes())];
+                let commit = Commit::create(parent, "Author", format!("Commit {i}"), th, media);
+                let id = commit.id;
+                store.append(commit).expect("append commit");
+                expected_ids.push(id);
+                parent = Some(id);
+            }
+        }
+
+        // INFO: Restart commit engine by opening a new instance on the persisted database
+        let reloaded_store = SqliteCommitStore::open(&db_path).expect("reload store");
+        let chain = reloaded_store.chain_from_head().expect("chain from head");
+        assert_eq!(chain.len(), 50);
+
+        // Chain is HEAD first, so reversed expected_ids matches
+        expected_ids.reverse();
+        for (i, commit) in chain.iter().enumerate() {
+            assert_eq!(commit.id, expected_ids[i]);
+            assert_eq!(commit.message, format!("Commit {}", 49 - i));
+        }
+    }
+}
