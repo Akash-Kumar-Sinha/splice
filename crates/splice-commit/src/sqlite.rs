@@ -283,6 +283,14 @@ impl CommitStore for SqliteCommitStore {
 
         Ok(chain)
     }
+
+    fn head_id(&self) -> Result<Option<CommitId>, StoreError> {
+        self.head_id()
+    }
+
+    fn set_head(&self, id: &CommitId) -> Result<(), StoreError> {
+        self.set_head(id)
+    }
 }
 
 #[cfg(test)]
