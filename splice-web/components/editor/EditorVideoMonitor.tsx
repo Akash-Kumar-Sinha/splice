@@ -104,14 +104,6 @@ export default function EditorVideoMonitor({
                 {activeClipInfo.clip.name} · {activeClipInfo.offset.toFixed(1)}s
               </span>
             </div>
-
-            <div className="absolute top-3 right-3 bg-background/85 backdrop-blur-md border border-border/80 rounded-lg px-2.5 py-1 text-[11px] pointer-events-none z-10 shadow-sm">
-              <TimeDisplay
-                currentTime={playhead}
-                duration={totalDuration}
-                showDuration={true}
-              />
-            </div>
           </>
         ) : (
           <div className="text-muted-foreground text-xs text-center p-8 flex flex-col items-center gap-3">
