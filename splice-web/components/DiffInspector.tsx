@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   IconGitCompare,
   IconPlus,
@@ -10,12 +10,19 @@ import {
   IconArrowRight,
   IconClock,
   IconSparkles,
+  IconPlayerPlay,
+  IconPlayerPause,
+  IconPlayerSkipBack,
+  IconPlayerSkipForward,
+  IconVolume,
+  IconVolumeOff,
+  IconVideo,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { Commit } from './HistoryPanel';
+import { Commit, Timeline } from './HistoryPanel';
 import { cn } from '@/lib/utils';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -60,9 +67,22 @@ export default function DiffInspector({
   const [diff, setDiff] = useState<TimelineDiff | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
+  // Timeline structures for version A and version B
+  const [timelineA, setTimelineA] = useState<Timeline | null>(null);
+  const [timelineB, setTimelineB] = useState<Timeline | null>(null);
+
+  // Dual Synced Video Players State
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [masterTime, setMasterTime] = useState<number>(0);
+  const [audioFocus, setAudioFocus] = useState<'a' | 'b' | 'both'>('b');
+
+  const videoRefA = useRef<HTMLVideoElement | null>(null);
+  const videoRefB = useRef<HTMLVideoElement | null>(null);
+
   const baseCommit = commits.find((c) => c.id === baseCommitId);
   const targetCommit = commits.find((c) => c.id === targetCommitId);
 
+  // Fetch Diff
   useEffect(() => {
     if (!baseCommitId || !targetCommitId || baseCommitId === targetCommitId) {
       setDiff(null);
@@ -89,6 +109,146 @@ export default function DiffInspector({
     fetchDiff();
   }, [baseCommitId, targetCommitId]);
 
+  // Fetch reconstructed timeline A
+  useEffect(() => {
+    if (!baseCommitId) {
+      setTimelineA(null);
+      return;
+    }
+    fetch(`${API_URL}/commits/${baseCommitId}/revert?mode=preview`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setTimelineA(data))
+      .catch(console.error);
+  }, [baseCommitId]);
+
+  // Fetch reconstructed timeline B
+  useEffect(() => {
+    if (!targetCommitId) {
+      setTimelineB(null);
+      return;
+    }
+    fetch(`${API_URL}/commits/${targetCommitId}/revert?mode=preview`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setTimelineB(data))
+      .catch(console.error);
+  }, [targetCommitId]);
+
+  const clipsA = timelineA?.tracks[0]?.clips || [];
+  const clipsB = timelineB?.tracks[0]?.clips || [];
+
+  const durationA = timelineA?.total_duration || 10;
+  const durationB = timelineB?.total_duration || 10;
+  const maxDuration = Math.max(0.1, durationA, durationB);
+
+  // Calculate active clip for Version A at given time
+  const getClipInfoA = useCallback(
+    (time: number) => {
+      for (const clip of clipsA) {
+        if (time >= clip.start_time && time < clip.start_time + clip.duration) {
+          const offset = time - clip.start_time;
+          return { clip, offset, videoTime: offset };
+        }
+      }
+      if (clipsA.length > 0) {
+        const last = clipsA[clipsA.length - 1];
+        if (time >= last.start_time + last.duration) {
+          return { clip: last, offset: last.duration, videoTime: last.duration };
+        }
+        return { clip: clipsA[0], offset: 0, videoTime: 0 };
+      }
+      return null;
+    },
+    [clipsA]
+  );
+
+  // Calculate active clip for Version B at given time
+  const getClipInfoB = useCallback(
+    (time: number) => {
+      for (const clip of clipsB) {
+        if (time >= clip.start_time && time < clip.start_time + clip.duration) {
+          const offset = time - clip.start_time;
+          return { clip, offset, videoTime: offset };
+        }
+      }
+      if (clipsB.length > 0) {
+        const last = clipsB[clipsB.length - 1];
+        if (time >= last.start_time + last.duration) {
+          return { clip: last, offset: last.duration, videoTime: last.duration };
+        }
+        return { clip: clipsB[0], offset: 0, videoTime: 0 };
+      }
+      return null;
+    },
+    [clipsB]
+  );
+
+  const activeClipA = getClipInfoA(masterTime);
+  const activeClipB = getClipInfoB(masterTime);
+
+  const mediaHashA = activeClipA?.clip.media_hash || baseCommit?.media_refs[0] || null;
+  const mediaHashB = activeClipB?.clip.media_hash || targetCommit?.media_refs[0] || null;
+
+  // Sync video audio mute according to audioFocus selection
+  useEffect(() => {
+    if (videoRefA.current) {
+      videoRefA.current.muted = audioFocus === 'b';
+    }
+    if (videoRefB.current) {
+      videoRefB.current.muted = audioFocus === 'a';
+    }
+  }, [audioFocus]);
+
+  // Master Play/Pause toggle
+  const toggleMasterPlay = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+      videoRefA.current?.pause();
+      videoRefB.current?.pause();
+    } else {
+      if (masterTime >= maxDuration - 0.1) {
+        handleMasterSeek(0);
+      }
+      setIsPlaying(true);
+      videoRefA.current?.play().catch(console.warn);
+      videoRefB.current?.play().catch(console.warn);
+    }
+  };
+
+  // Master Seek
+  const handleMasterSeek = (time: number) => {
+    const clamped = Math.max(0, Math.min(time, maxDuration));
+    setMasterTime(clamped);
+
+    const infoA = getClipInfoA(clamped);
+    if (videoRefA.current && infoA) {
+      videoRefA.current.currentTime = infoA.videoTime;
+    }
+    const infoB = getClipInfoB(clamped);
+    if (videoRefB.current && infoB) {
+      videoRefB.current.currentTime = infoB.videoTime;
+    }
+  };
+
+  // Master playback ticker
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    const interval = setInterval(() => {
+      setMasterTime((prev) => {
+        const next = prev + 0.05;
+        if (next >= maxDuration) {
+          setIsPlaying(false);
+          videoRefA.current?.pause();
+          videoRefB.current?.pause();
+          return maxDuration;
+        }
+        return next;
+      });
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, maxDuration]);
+
   return (
     <Card className="p-6 bg-card/60 border border-border flex flex-col gap-6 shadow-xl">
       {/* Header with Commit Selector */}
@@ -99,13 +259,13 @@ export default function DiffInspector({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-bold text-base text-foreground">Timeline Visual Diff</h3>
+              <h3 className="font-bold text-base text-foreground">Dual-View Comparison & Visual Diff</h3>
               <Badge variant="outline" className="font-mono text-[10px]">
-                Strategy Comparator
+                Side-by-Side Sync Player
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground font-mono">
-              Compare structural changes, trimming deltas, and track differences between two saves.
+              Compare two versions simultaneously with synchronized lockstep video playback and structural timeline diffing.
             </p>
           </div>
         </div>
@@ -135,7 +295,7 @@ export default function DiffInspector({
             className="w-full bg-card border border-border rounded-lg text-xs font-mono p-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="" disabled>
-              Select base commit...
+              Select base version...
             </option>
             {commits.map((c) => (
               <option key={`base-${c.id}`} value={c.id}>
@@ -145,7 +305,7 @@ export default function DiffInspector({
           </select>
           {baseCommit && (
             <div className="text-[11px] font-mono text-muted-foreground truncate">
-              {baseCommit.author} • {baseCommit.media_refs.length} media items
+              {baseCommit.author} • {baseCommit.media_refs.length} media segment(s) • {durationA.toFixed(1)}s
             </div>
           )}
         </div>
@@ -166,7 +326,7 @@ export default function DiffInspector({
             className="w-full bg-card border border-border rounded-lg text-xs font-mono p-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="" disabled>
-              Select target commit to compare...
+              Select target version to compare...
             </option>
             {commits.map((c) => (
               <option key={`target-${c.id}`} value={c.id}>
@@ -176,9 +336,191 @@ export default function DiffInspector({
           </select>
           {targetCommit && (
             <div className="text-[11px] font-mono text-muted-foreground truncate">
-              {targetCommit.author} • {targetCommit.media_refs.length} media items
+              {targetCommit.author} • {targetCommit.media_refs.length} media segment(s) • {durationB.toFixed(1)}s
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Synchronized Side-by-Side Dual Video Monitors */}
+      <div className="bg-background/80 border border-border rounded-2xl p-4 flex flex-col gap-4 shadow-inner">
+        <div className="flex items-center justify-between text-xs font-mono text-muted-foreground border-b border-border pb-2">
+          <div className="flex items-center gap-2">
+            <IconMovie className="size-4 text-primary" />
+            <span className="font-semibold text-foreground">Synchronized Dual Video Comparison</span>
+          </div>
+
+          {/* Audio Switcher */}
+          <div className="flex items-center gap-1.5 bg-muted/40 p-1 rounded-lg border border-border">
+            <span className="text-[10px] text-muted-foreground mr-1">Audio:</span>
+            <Button
+              variant={audioFocus === 'a' ? 'secondary' : 'ghost'}
+              size="xs"
+              onClick={() => setAudioFocus('a')}
+              className="text-[10px] h-5 px-1.5"
+            >
+              Audio A
+            </Button>
+            <Button
+              variant={audioFocus === 'b' ? 'secondary' : 'ghost'}
+              size="xs"
+              onClick={() => setAudioFocus('b')}
+              className="text-[10px] h-5 px-1.5"
+            >
+              Audio B
+            </Button>
+            <Button
+              variant={audioFocus === 'both' ? 'secondary' : 'ghost'}
+              size="xs"
+              onClick={() => setAudioFocus('both')}
+              className="text-[10px] h-5 px-1.5"
+            >
+              Both
+            </Button>
+          </div>
+        </div>
+
+        {/* Dual Video Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Monitor A (Base) */}
+          <div className="flex flex-col gap-2 bg-card/40 p-3 rounded-xl border border-border">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <Badge variant="outline" className="text-[10px] truncate max-w-[200px]">
+                Version A: {baseCommit?.message || 'Base'}
+              </Badge>
+              <span className="text-muted-foreground text-[10px]">
+                {Math.min(masterTime, durationA).toFixed(2)}s / {durationA.toFixed(1)}s
+              </span>
+            </div>
+
+            <div className="relative aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center border border-border">
+              {mediaHashA ? (
+                <video
+                  ref={videoRefA}
+                  src={`${API_URL}/media/${mediaHashA}`}
+                  className="w-full h-full object-contain"
+                  playsInline
+                  preload="auto"
+                  onLoadedMetadata={() => {
+                    if (videoRefA.current && activeClipA) {
+                      videoRefA.current.currentTime = activeClipA.videoTime;
+                      if (isPlaying) {
+                        videoRefA.current.play().catch(console.warn);
+                      }
+                    }
+                  }}
+                />
+              ) : (
+                <div className="text-muted-foreground font-mono text-xs flex flex-col items-center gap-1">
+                  <IconVideo className="size-6 text-muted-foreground/40" />
+                  <span>No media for Version A</span>
+                </div>
+              )}
+
+              {audioFocus === 'b' && (
+                <div className="absolute top-2 right-2 bg-black/70 rounded-md p-1">
+                  <IconVolumeOff className="size-3 text-muted-foreground" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Monitor B (Target) */}
+          <div className="flex flex-col gap-2 bg-card/40 p-3 rounded-xl border border-border">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <Badge variant="default" className="text-[10px] truncate max-w-[200px]">
+                Version B: {targetCommit?.message || 'Target'}
+              </Badge>
+              <span className="text-primary text-[10px] font-bold">
+                {Math.min(masterTime, durationB).toFixed(2)}s / {durationB.toFixed(1)}s
+              </span>
+            </div>
+
+            <div className="relative aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center border border-border">
+              {mediaHashB ? (
+                <video
+                  ref={videoRefB}
+                  src={`${API_URL}/media/${mediaHashB}`}
+                  className="w-full h-full object-contain"
+                  playsInline
+                  preload="auto"
+                  onLoadedMetadata={() => {
+                    if (videoRefB.current && activeClipB) {
+                      videoRefB.current.currentTime = activeClipB.videoTime;
+                      if (isPlaying) {
+                        videoRefB.current.play().catch(console.warn);
+                      }
+                    }
+                  }}
+                />
+              ) : (
+                <div className="text-muted-foreground font-mono text-xs flex flex-col items-center gap-1">
+                  <IconVideo className="size-6 text-muted-foreground/40" />
+                  <span>No media for Version B</span>
+                </div>
+              )}
+
+              {audioFocus === 'a' && (
+                <div className="absolute top-2 right-2 bg-black/70 rounded-md p-1">
+                  <IconVolumeOff className="size-3 text-muted-foreground" />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Master Synced Playback Transport Controls */}
+        <div className="flex flex-col gap-2 pt-2 border-t border-border/50">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => handleMasterSeek(0)}
+                title="Jump Both to Start"
+              >
+                <IconPlayerSkipBack />
+              </Button>
+              <Button
+                size="sm"
+                onClick={toggleMasterPlay}
+                className="font-mono font-bold"
+              >
+                {isPlaying ? (
+                  <>
+                    <IconPlayerPause data-icon="inline-start" /> Pause Both
+                  </>
+                ) : (
+                  <>
+                    <IconPlayerPlay data-icon="inline-start" /> Play Both Synced
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => handleMasterSeek(maxDuration)}
+                title="Jump Both to End"
+              >
+                <IconPlayerSkipForward />
+              </Button>
+            </div>
+
+            <Badge variant="outline" className="font-mono text-primary font-bold">
+              Sync Playhead: {masterTime.toFixed(2)}s / {maxDuration.toFixed(1)}s
+            </Badge>
+          </div>
+
+          {/* Master Synchronized Timeline Scrubber */}
+          <input
+            type="range"
+            min="0"
+            max={maxDuration}
+            step="0.05"
+            value={masterTime}
+            onChange={(e) => handleMasterSeek(parseFloat(e.target.value))}
+            className="w-full accent-primary cursor-pointer"
+          />
         </div>
       </div>
 
@@ -222,7 +564,7 @@ export default function DiffInspector({
                 Base Track A ({baseCommit?.message || 'Version A'})
               </span>
               <span className="text-[10px]">
-                {baseCommit?.media_refs.length || 0} clips
+                {baseCommit?.media_refs.length || 0} clip(s)
               </span>
             </div>
             <div className="h-16 bg-background border border-border rounded-xl p-2 relative flex gap-2 overflow-x-auto items-center">
@@ -288,7 +630,7 @@ export default function DiffInspector({
                 Target Track B ({targetCommit?.message || 'Version B'})
               </span>
               <span className="text-[10px]">
-                {targetCommit?.media_refs.length || 0} clips
+                {targetCommit?.media_refs.length || 0} clip(s)
               </span>
             </div>
             <div className="h-16 bg-background border border-border rounded-xl p-2 relative flex gap-2 overflow-x-auto items-center">
@@ -397,7 +739,7 @@ export default function DiffInspector({
         </div>
       ) : (
         <div className="text-center py-8 font-mono text-xs text-muted-foreground">
-          Select two distinct commits above to compute and visualize their differences.
+          Select two distinct versions above to compute and visualize their differences.
         </div>
       )}
     </Card>

@@ -30,6 +30,29 @@ pub struct TimelineTrack {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawEditorClip {
+    pub id: String,
+    pub media: String,
+    pub in_point: f64,
+    pub out_point: f64,
+    pub position: f64,
+    pub name: String,
+    #[serde(default)]
+    pub original_duration: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawEditorTrack {
+    pub id: String,
+    pub clips: Vec<RawEditorClip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawEditorState {
+    pub tracks: Vec<RawEditorTrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     pub commit_id: CommitId,
     pub parent_id: Option<CommitId>,
@@ -46,42 +69,111 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    pub fn reconstruct(commit: &Commit, mode: RevertMode, is_head: bool) -> Self {
-        let mut video_clips = Vec::new();
-        let mut audio_clips = Vec::new();
+    pub fn from_raw_state(
+        commit: &Commit,
+        raw_state: &RawEditorState,
+        mode: RevertMode,
+        is_head: bool,
+    ) -> Self {
+        let mut total_duration = 0.0;
+        let mut tracks = Vec::new();
 
+        for (t_idx, raw_track) in raw_state.tracks.iter().enumerate() {
+            let mut clips = Vec::new();
+            for raw_clip in &raw_track.clips {
+                let duration = (raw_clip.out_point - raw_clip.in_point).max(0.1);
+                let media_hash = MediaHash::from_hex(&raw_clip.media)
+                    .unwrap_or_else(|_| MediaHash::compute(raw_clip.media.as_bytes()));
+
+                clips.push(TimelineClip {
+                    id: raw_clip.id.clone(),
+                    name: raw_clip.name.clone(),
+                    media_hash,
+                    start_time: raw_clip.position,
+                    duration,
+                    track_index: t_idx,
+                });
+
+                if raw_clip.position + duration > total_duration {
+                    total_duration = raw_clip.position + duration;
+                }
+            }
+
+            tracks.push(TimelineTrack {
+                id: raw_track.id.clone(),
+                name: format!("Video Track {}", t_idx + 1),
+                track_type: "video".to_string(),
+                clips,
+            });
+        }
+
+        Self {
+            commit_id: commit.id,
+            parent_id: commit.parent,
+            timeline_hash: commit.timeline_hash,
+            message: commit.message.clone(),
+            author: commit.author.clone(),
+            timestamp: commit.timestamp,
+            tracks,
+            media_refs: commit.media_refs.clone(),
+            mode,
+            is_head,
+            total_duration: total_duration.max(0.1),
+        }
+    }
+
+    pub fn to_splice_commit_timeline(&self) -> splice_commit::Timeline {
+        let mut tracks = Vec::new();
+        for t in &self.tracks {
+            let mut clips = Vec::new();
+            for c in &t.clips {
+                clips.push(splice_commit::Clip::new(
+                    c.media_hash,
+                    std::time::Duration::from_secs_f64(0.0),
+                    std::time::Duration::from_secs_f64(c.duration),
+                    std::time::Duration::from_secs_f64(c.start_time),
+                ));
+            }
+            tracks.push(splice_commit::Track::new(clips));
+        }
+        splice_commit::Timeline::new(tracks)
+    }
+
+    pub fn reconstruct(
+        commit: &Commit,
+        mode: RevertMode,
+        is_head: bool,
+        media_store: Option<&dyn splice_media::MediaStore>,
+    ) -> Self {
+        let mut video_clips = Vec::new();
         let mut current_video_time = 0.0;
-        let mut current_audio_time = 0.0;
 
         for (idx, media_hash) in commit.media_refs.iter().enumerate() {
-            let clip_duration = 5.0 + ((media_hash.as_bytes()[0] % 10) as f64);
-            if idx % 2 == 0 {
-                video_clips.push(TimelineClip {
-                    id: format!("clip-v-{}", idx + 1),
-                    name: format!("Video Segment #{}", idx + 1),
-                    media_hash: *media_hash,
-                    start_time: current_video_time,
-                    duration: clip_duration,
-                    track_index: 0,
-                });
-                current_video_time += clip_duration;
+            let clip_duration = if let Some(store) = media_store {
+                if let Some(path) = store.resolve(media_hash) {
+                    crate::probe_duration(&path)
+                } else {
+                    10.0
+                }
             } else {
-                audio_clips.push(TimelineClip {
-                    id: format!("clip-a-{}", idx + 1),
-                    name: format!("Audio Track #{}", idx + 1),
-                    media_hash: *media_hash,
-                    start_time: current_audio_time,
-                    duration: clip_duration,
-                    track_index: 1,
-                });
-                current_audio_time += clip_duration;
-            }
+                10.0
+            };
+
+            video_clips.push(TimelineClip {
+                id: format!("clip-v-{}", idx + 1),
+                name: format!("Video Clip #{}", idx + 1),
+                media_hash: *media_hash,
+                start_time: current_video_time,
+                duration: clip_duration,
+                track_index: 0,
+            });
+            current_video_time += clip_duration;
         }
 
         if commit.media_refs.is_empty() {
             video_clips.push(TimelineClip {
                 id: "clip-v-root".to_string(),
-                name: "Primary Timeline Composition".to_string(),
+                name: "Primary Composition".to_string(),
                 media_hash: commit.timeline_hash,
                 start_time: 0.0,
                 duration: 10.0,
@@ -90,22 +182,14 @@ impl Timeline {
             current_video_time = 10.0;
         }
 
-        let total_duration = current_video_time.max(current_audio_time).max(10.0);
+        let total_duration = current_video_time.max(0.1);
 
-        let tracks = vec![
-            TimelineTrack {
-                id: "track-v1".to_string(),
-                name: "Video 1 (Primary)".to_string(),
-                track_type: "video".to_string(),
-                clips: video_clips,
-            },
-            TimelineTrack {
-                id: "track-a1".to_string(),
-                name: "Audio 1 (Master Stereo)".to_string(),
-                track_type: "audio".to_string(),
-                clips: audio_clips,
-            },
-        ];
+        let tracks = vec![TimelineTrack {
+            id: "track-v1".to_string(),
+            name: "Video 1 (Primary Track)".to_string(),
+            track_type: "video".to_string(),
+            clips: video_clips,
+        }];
 
         Self {
             commit_id: commit.id,

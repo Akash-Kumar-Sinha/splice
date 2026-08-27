@@ -5,6 +5,7 @@ pub mod sqlite;
 pub mod store;
 pub mod tag;
 pub mod timeline;
+pub mod tree;
 
 pub use commit::Commit;
 pub use error::StoreError;
@@ -13,3 +14,4 @@ pub use sqlite::SqliteCommitStore;
 pub use store::CommitStore;
 pub use tag::Tag;
 pub use timeline::{Clip, Timeline, Track};
+pub use tree::{CommitTreeNode, build_commit_tree};

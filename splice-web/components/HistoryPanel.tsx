@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   IconHistory,
   IconSearch,
@@ -16,6 +16,19 @@ import {
   IconFilter,
   IconPlus,
   IconGitCompare,
+  IconGitBranch,
+  IconList,
+  IconDeviceFloppy,
+  IconPlayerPlay,
+  IconPlayerPause,
+  IconPlayerSkipBack,
+  IconPlayerSkipForward,
+  IconVolume,
+  IconVolumeOff,
+  IconVideo,
+  IconChevronDown,
+  IconChevronRight,
+  IconSparkles,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -50,6 +63,13 @@ export interface Commit {
   timeline_hash: string;
   media_refs: string[];
   tags: string[];
+}
+
+export interface CommitTreeNode {
+  commit: Commit;
+  tags: string[];
+  depth: number;
+  children: CommitTreeNode[];
 }
 
 export interface TimelineClip {
@@ -97,10 +117,13 @@ export function useRevert(id: string) {
 
 interface HistoryPanelProps {
   initialCommits: Commit[];
+  onOpenInEditor?: (timeline: Timeline) => void;
 }
 
-export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
+export default function HistoryPanel({ initialCommits, onOpenInEditor }: HistoryPanelProps) {
   const [commits, setCommits] = useState<Commit[]>(initialCommits);
+  const [treeNodes, setTreeNodes] = useState<CommitTreeNode[]>([]);
+  const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
@@ -115,6 +138,17 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
   const [newTagInput, setNewTagInput] = useState<string>('');
   const [showAddTagForId, setShowAddTagForId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'timeline' | 'json'>('timeline');
+  const [showTechDetails, setShowTechDetails] = useState<boolean>(false);
+
+  // Inspector Video Player Monitor state
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [videoTime, setVideoTime] = useState<number>(0);
+  const [videoDuration, setVideoDuration] = useState<number>(10);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(1);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Visual Diff state
   const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [diffBaseId, setDiffBaseId] = useState<string | null>(
     initialCommits.length > 1 ? initialCommits[1].id : initialCommits[0]?.id || null
@@ -122,9 +156,13 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
   const [diffTargetId, setDiffTargetId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
+
+  // Branch / Duplicate Version state
+  const [showSaveAsModal, setShowSaveAsModal] = useState<boolean>(false);
+  const [saveAsMessage, setSaveAsMessage] = useState<string>('Alternate version cut');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  const fetchCommits = async () => {
+  const fetchCommits = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/commits`, { cache: 'no-store' });
       if (res.ok) {
@@ -137,26 +175,146 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
     } catch (err) {
       console.error('Error refreshing commits:', err);
     }
-  };
+  }, []);
+
+  const fetchTree = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/commits/tree`, { cache: 'no-store' });
+      if (res.ok) {
+        const data: CommitTreeNode[] = await res.json();
+        setTreeNodes(data);
+      }
+    } catch (err) {
+      console.error('Error fetching tree:', err);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await fetchCommits();
+    await fetchTree();
+  }, [fetchCommits, fetchTree]);
+
+  useEffect(() => {
+    fetchTree();
+  }, [fetchTree]);
+
+  // Video volume sync
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = isMuted;
+      videoRef.current.volume = volume;
+    }
+  }, [isMuted, volume]);
 
   const handleSelectCommit = async (commitId: string, mode: 'preview' | 'restore' = 'preview') => {
     setSelectedCommitId(commitId);
     setLoadingTimeline(true);
     setStatusMessage(null);
+    setIsPlaying(false);
+    setVideoTime(0);
+
     try {
       const revertFn = useRevert(commitId);
       const data = await revertFn(mode);
       setTimeline(data);
       if (mode === 'restore') {
         setActiveHeadId(commitId);
-        setStatusMessage(`Successfully restored HEAD to commit ${commitId.slice(0, 8)}`);
-        await fetchCommits();
+        setStatusMessage(`Active working project set to "${data.message}"`);
+        await refreshAll();
       }
     } catch (err) {
       console.error(`Error during ${mode}:`, err);
-      setStatusMessage(`Error: Failed to ${mode} commit`);
+      setStatusMessage(`Error loading version`);
     } finally {
       setLoadingTimeline(false);
+    }
+  };
+
+  const primaryTrack = timeline?.tracks[0];
+  const clips = primaryTrack?.clips || [];
+
+  const getActiveHistoryClipInfo = useCallback(
+    (time: number) => {
+      for (const clip of clips) {
+        if (time >= clip.start_time && time < clip.start_time + clip.duration) {
+          const offset = time - clip.start_time;
+          return { clip, offset, videoTime: offset };
+        }
+      }
+      if (clips.length > 0) {
+        const last = clips[clips.length - 1];
+        if (time >= last.start_time + last.duration) {
+          return { clip: last, offset: last.duration, videoTime: last.duration };
+        }
+        return { clip: clips[0], offset: 0, videoTime: 0 };
+      }
+      return null;
+    },
+    [clips]
+  );
+
+  const activeHistoryClip = getActiveHistoryClipInfo(videoTime);
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      if (videoTime >= (timeline?.total_duration || videoDuration) - 0.1) {
+        handleSeek(0);
+      }
+      videoRef.current.play().catch(console.warn);
+      setIsPlaying(true);
+    }
+  };
+
+  const handleSeek = (time: number) => {
+    const maxDur = timeline?.total_duration || videoDuration;
+    const clamped = Math.max(0, Math.min(time, maxDur));
+    setVideoTime(clamped);
+    const info = getActiveHistoryClipInfo(clamped);
+    if (videoRef.current && info) {
+      videoRef.current.currentTime = info.videoTime;
+    }
+  };
+
+
+  const handleOpenInEditor = () => {
+    if (!timeline) return;
+    if (onOpenInEditor) {
+      onOpenInEditor(timeline);
+    } else {
+      handleSelectCommit(timeline.commit_id, 'restore');
+    }
+  };
+
+  const handleSaveAsNewVersion = async () => {
+    if (!selectedCommitId || !saveAsMessage.trim()) return;
+
+    setStatusMessage('Creating duplicate version branch...');
+    try {
+      const res = await fetch(`${API_URL}/commits/save-as`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: selectedCommitId,
+          message: saveAsMessage.trim(),
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to save as new version: ${res.statusText}`);
+      }
+
+      const newId: string = await res.json();
+      setStatusMessage(`Created version "${saveAsMessage.trim()}"`);
+      setShowSaveAsModal(false);
+      await refreshAll();
+      await handleSelectCommit(newId, 'preview');
+    } catch (err) {
+      console.error('Error in save as new version:', err);
+      setStatusMessage('Error creating new version');
     }
   };
 
@@ -171,8 +329,8 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
       if (res.ok) {
         setNewTagInput('');
         setShowAddTagForId(null);
-        setStatusMessage(`Added tag "${label}"`);
-        await fetchCommits();
+        setStatusMessage(`Tagged as "${label}"`);
+        await refreshAll();
       }
     } catch (err) {
       console.error('Error adding tag:', err);
@@ -189,7 +347,7 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
       );
       if (res.ok) {
         setStatusMessage(`Removed tag "${label}"`);
-        await fetchCommits();
+        await refreshAll();
       }
     } catch (err) {
       console.error('Error removing tag:', err);
@@ -197,12 +355,12 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
   };
 
   const handleToggleStar = async (commit: Commit) => {
-    const isStarred = commit.tags.includes('Picture Lock') || commit.tags.includes('Starred');
+    const isStarred = commit.tags?.includes('Picture Lock') || commit.tags?.includes('Starred');
     if (isStarred) {
-      if (commit.tags.includes('Picture Lock')) {
+      if (commit.tags?.includes('Picture Lock')) {
         await handleRemoveTag(commit.id, 'Picture Lock');
       }
-      if (commit.tags.includes('Starred')) {
+      if (commit.tags?.includes('Starred')) {
         await handleRemoveTag(commit.id, 'Starred');
       }
     } else {
@@ -228,8 +386,6 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
     const matchesSearch =
       c.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.timeline_hash.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.tags?.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
 
     const isStarred =
@@ -245,31 +401,171 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
   });
 
   const selectedCommit = commits.find((c) => c.id === selectedCommitId);
+  const activeMediaHash = timeline?.media_refs[0] || selectedCommit?.media_refs[0] || null;
+
+  // Render individual tree node recursively
+  const renderTreeNode = (node: CommitTreeNode) => {
+    const commit = node.commit;
+    const isSelected = selectedCommitId === commit.id;
+    const isHead = activeHeadId === commit.id;
+    const hasStarTag =
+      node.tags?.includes('Picture Lock') ||
+      node.tags?.includes("Director's Cut") ||
+      node.tags?.includes('Starred');
+
+    return (
+      <div key={node.commit.id} className="flex flex-col gap-1 w-full">
+        <div
+          style={{ paddingLeft: `${node.depth * 14}px` }}
+          className="w-full flex items-center relative"
+        >
+          {node.depth > 0 && (
+            <div className="text-muted-foreground/60 font-mono text-[10px] select-none mr-1">
+              └──
+            </div>
+          )}
+
+          <div
+            onClick={() => {
+              if (isDiffMode) {
+                setDiffBaseId(commit.id);
+              } else {
+                handleSelectCommit(commit.id, 'preview');
+              }
+            }}
+            className={cn(
+              'flex-1 text-left rounded-xl p-2.5 transition-all border flex flex-col gap-1.5 cursor-pointer relative',
+              isSelected && !isDiffMode
+                ? 'bg-card border-primary/70 shadow-sm'
+                : 'bg-card/20 hover:bg-card/60 border-border/40',
+              isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
+              isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
+            )}
+          >
+            <div className="flex gap-2.5 items-center">
+              {/* Mini Frame Thumbnail */}
+              <div className="relative size-10 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+                <img
+                  src={`${API_URL}/commits/${commit.id}/thumbnail`}
+                  alt="Thumbnail"
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLElement).style.display = 'none';
+                  }}
+                />
+              </div>
+
+              <div className="flex-1 min-w-0 flex flex-col">
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {isHead && (
+                      <Badge variant="default" className="text-[9px] px-1 py-0">
+                        ACTIVE VERSION
+                      </Badge>
+                    )}
+                    {node.depth > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[8px] px-1 py-0 bg-primary/10 text-primary border-primary/30"
+                      >
+                        <IconGitBranch className="size-2.5 mr-0.5" /> Branch #{node.depth}
+                      </Badge>
+                    )}
+                  </div>
+
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleStar(commit);
+                    }}
+                    title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
+                    className="size-5 hover:text-amber-400"
+                  >
+                    {hasStarTag ? (
+                      <IconStarFilled className="size-3.5 text-amber-400" />
+                    ) : (
+                      <IconStar className="size-3.5 text-muted-foreground" />
+                    )}
+                  </Button>
+                </div>
+
+                <div className="font-semibold text-xs text-foreground truncate mt-0.5">
+                  {commit.message}
+                </div>
+              </div>
+            </div>
+
+            {/* Tags Chips */}
+            {node.tags && node.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {node.tags.map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="secondary"
+                    className="font-mono text-[8px] px-1.5 py-0 gap-0.5 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                  >
+                    <IconTag className="size-2" />
+                    {tag}
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Recursive Children */}
+        {node.children && node.children.length > 0 && (
+          <div className="flex flex-col gap-1 w-full">
+            {node.children.map((child) => renderTreeNode(child))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <SidebarProvider className="h-full">
-      <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground">
-        {/* Shadcn Sidebar */}
+      <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans">
+        {/* Sidebar: Version History & Saves */}
         <Sidebar className="border-r border-border bg-card/40 w-96 shrink-0" collapsible="none">
           <SidebarHeader className="p-3 border-b border-border flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
                 <IconHistory className="size-4 text-primary" />
-                <span>Snapshots & Tags</span>
+                <span>Project Version History</span>
               </div>
               <div className="flex items-center gap-1">
+                {/* View Switcher */}
+                <div className="bg-muted/40 p-0.5 rounded-lg border border-border flex items-center gap-0.5">
+                  <Button
+                    variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
+                    size="icon-xs"
+                    onClick={() => setViewMode('tree')}
+                    title="Branch Tree View"
+                  >
+                    <IconGitBranch className="size-3" />
+                  </Button>
+                  <Button
+                    variant={viewMode === 'flat' ? 'secondary' : 'ghost'}
+                    size="icon-xs"
+                    onClick={() => setViewMode('flat')}
+                    title="Chronological List"
+                  >
+                    <IconList className="size-3" />
+                  </Button>
+                </div>
+
                 <Button
                   variant={isDiffMode ? 'default' : 'outline'}
                   size="xs"
                   onClick={() => setIsDiffMode(!isDiffMode)}
-                  className="font-mono text-[10px] gap-1"
+                  className="text-[10px] gap-1 font-mono"
                 >
                   <IconGitCompare className="size-3" />
-                  {isDiffMode ? 'Exit Diff' : 'Visual Diff'}
+                  {isDiffMode ? 'Exit Diff' : 'Compare'}
                 </Button>
-                <Badge variant="secondary" className="font-mono text-[10px]">
-                  {filteredCommits.length} / {commits.length}
-                </Badge>
               </div>
             </div>
 
@@ -277,10 +573,10 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
             <div className="relative">
               <IconSearch className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
               <Input
-                placeholder="Filter commits, tags, messages..."
+                placeholder="Search versions, tags, notes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-8 text-xs font-mono"
+                className="pl-8 h-8 text-xs"
               />
             </div>
 
@@ -293,7 +589,7 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                   setStarredOnly(!starredOnly);
                   setSelectedTagFilter(null);
                 }}
-                className="font-mono text-[10px]"
+                className="text-[10px]"
               >
                 {starredOnly ? (
                   <IconStarFilled className="size-3 text-amber-400" />
@@ -312,7 +608,7 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                     setSelectedTagFilter(selectedTagFilter === tag ? null : tag);
                   }}
                   className={cn(
-                    'font-mono text-[10px] h-6 px-2',
+                    'text-[10px] h-6 px-2',
                     selectedTagFilter === tag && 'border border-primary'
                   )}
                 >
@@ -325,227 +621,154 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
 
           <SidebarContent className="p-2">
             <SidebarGroup className="p-0">
-              <SidebarGroupLabel className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
-                <span>Commit History Chain</span>
-                {starredOnly && (
-                  <Badge variant="outline" className="text-[9px] text-primary">
-                    Filtered
-                  </Badge>
-                )}
+              <SidebarGroupLabel className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
+                <span>{viewMode === 'tree' ? 'Saved Branches & Cuts' : 'All Saves'}</span>
+                <Badge variant="outline" className="text-[9px] font-mono">
+                  {filteredCommits.length} saves
+                </Badge>
               </SidebarGroupLabel>
               <SidebarGroupContent>
-                <SidebarMenu className="gap-1.5">
-                  {filteredCommits.length === 0 ? (
-                    <div className="text-center py-10 text-muted-foreground text-xs font-mono flex flex-col items-center gap-2">
-                      <IconFilter className="size-6 text-muted-foreground/40" />
-                      <span>No matching snapshots found</span>
-                      {starredOnly && (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() => {
-                            setStarredOnly(false);
-                            setSelectedTagFilter(null);
-                          }}
-                        >
-                          Clear Tag Filter
-                        </Button>
-                      )}
-                    </div>
-                  ) : (
-                    filteredCommits.map((commit) => {
-                      const isSelected = selectedCommitId === commit.id;
-                      const isHead = activeHeadId === commit.id;
-                      const hasStarTag =
-                        commit.tags?.includes('Picture Lock') ||
-                        commit.tags?.includes("Director's Cut") ||
-                        commit.tags?.includes('Starred');
-                      const snapshotNumber =
-                        commits.length - 1 - commits.findIndex((c) => c.id === commit.id);
+                {viewMode === 'tree' && !searchQuery && !starredOnly && !selectedTagFilter ? (
+                  <div className="flex flex-col gap-1.5 py-1">
+                    {treeNodes.length === 0 ? (
+                      <div className="text-center py-8 text-muted-foreground text-xs">
+                        No saved versions yet. Save your first edit in the Timeline Editor!
+                      </div>
+                    ) : (
+                      treeNodes.map((root) => renderTreeNode(root))
+                    )}
+                  </div>
+                ) : (
+                  <SidebarMenu className="gap-1.5">
+                    {filteredCommits.length === 0 ? (
+                      <div className="text-center py-10 text-muted-foreground text-xs flex flex-col items-center gap-2">
+                        <IconFilter className="size-6 text-muted-foreground/40" />
+                        <span>No matching versions found</span>
+                      </div>
+                    ) : (
+                      filteredCommits.map((commit, i) => {
+                        const isSelected = selectedCommitId === commit.id;
+                        const isHead = activeHeadId === commit.id;
+                        const hasStarTag =
+                          commit.tags?.includes('Picture Lock') ||
+                          commit.tags?.includes("Director's Cut") ||
+                          commit.tags?.includes('Starred');
 
-                      return (
-                        <SidebarMenuItem key={commit.id}>
-                          <div
-                            onClick={() => {
-                              if (isDiffMode) {
-                                setDiffBaseId(commit.id);
-                              } else {
-                                handleSelectCommit(commit.id, 'preview');
-                              }
-                            }}
-                            className={cn(
-                              'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-2 cursor-pointer relative',
-                              isSelected && !isDiffMode
-                                ? 'bg-card border-primary/60 shadow-sm'
-                                : 'bg-card/20 hover:bg-card/60 border-border/40',
-                              isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
-                              isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
-                            )}
-                          >
-                            <div className="flex gap-2.5 items-start">
-                              {/* Visual Frame Thumbnail */}
-                              <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
-                                <img
-                                  src={`${API_URL}/commits/${commit.id}/thumbnail`}
-                                  alt="Frame Thumbnail"
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => {
-                                    (e.target as HTMLElement).style.display = 'none';
-                                  }}
-                                />
-                              </div>
+                        return (
+                          <SidebarMenuItem key={commit.id}>
+                            <div
+                              onClick={() => {
+                                if (isDiffMode) {
+                                  setDiffBaseId(commit.id);
+                                } else {
+                                  handleSelectCommit(commit.id, 'preview');
+                                }
+                              }}
+                              className={cn(
+                                'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-2 cursor-pointer relative',
+                                isSelected && !isDiffMode
+                                  ? 'bg-card border-primary/60 shadow-sm'
+                                  : 'bg-card/20 hover:bg-card/60 border-border/40',
+                                isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
+                                isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
+                              )}
+                            >
+                              <div className="flex gap-2.5 items-start">
+                                <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+                                  <img
+                                    src={`${API_URL}/commits/${commit.id}/thumbnail`}
+                                    alt="Frame"
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                  />
+                                </div>
 
-                              <div className="flex-1 min-w-0 flex flex-col gap-1">
-                                <div className="flex items-center justify-between gap-1">
-                                  <div className="flex items-center gap-1 flex-wrap">
-                                    <Badge
-                                      variant="outline"
-                                      className="font-mono text-[9px] px-1 py-0"
+                                <div className="flex-1 min-w-0 flex flex-col gap-1">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <div className="flex items-center gap-1 flex-wrap">
+                                      <Badge variant="outline" className="font-mono text-[9px] px-1 py-0">
+                                        v{commits.length - i}
+                                      </Badge>
+                                      {isHead && (
+                                        <Badge variant="default" className="text-[9px] px-1 py-0">
+                                          ACTIVE
+                                        </Badge>
+                                      )}
+                                    </div>
+
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleStar(commit);
+                                      }}
+                                      title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
+                                      className="size-5 hover:text-amber-400"
                                     >
-                                      #{snapshotNumber}
-                                    </Badge>
-                                    {isHead && (
-                                      <Badge
-                                        variant="default"
-                                        className="font-mono text-[9px] px-1 py-0"
-                                      >
-                                        HEAD
-                                      </Badge>
-                                    )}
-                                    {isSelected && !isHead && !isDiffMode && (
-                                      <Badge
-                                        variant="secondary"
-                                        className="font-mono text-[9px] px-1 py-0 text-primary"
-                                      >
-                                        PREVIEW
-                                      </Badge>
-                                    )}
-                                    {isDiffMode && diffBaseId === commit.id && (
-                                      <Badge variant="outline" className="text-[9px] border-amber-500 text-amber-300 px-1 py-0">
-                                        BASE (A)
-                                      </Badge>
-                                    )}
-                                    {isDiffMode && diffTargetId === commit.id && (
-                                      <Badge variant="default" className="text-[9px] px-1 py-0">
-                                        TARGET (B)
-                                      </Badge>
-                                    )}
+                                      {hasStarTag ? (
+                                        <IconStarFilled className="size-3.5 text-amber-400" />
+                                      ) : (
+                                        <IconStar className="size-3.5 text-muted-foreground" />
+                                      )}
+                                    </Button>
                                   </div>
 
-                                  {/* Star / Tag button */}
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-xs"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleToggleStar(commit);
-                                    }}
-                                    title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
-                                    className="size-5 hover:text-amber-400"
-                                  >
-                                    {hasStarTag ? (
-                                      <IconStarFilled className="size-3.5 text-amber-400" />
-                                    ) : (
-                                      <IconStar className="size-3.5 text-muted-foreground" />
-                                    )}
-                                  </Button>
-                                </div>
-
-                                <div className="font-medium text-xs text-foreground line-clamp-1">
-                                  {commit.message}
+                                  <div className="font-semibold text-xs text-foreground line-clamp-1">
+                                    {commit.message}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
 
-                            {/* Tags List */}
-                            {commit.tags && commit.tags.length > 0 && (
-                              <div className="flex flex-wrap gap-1">
-                                {commit.tags.map((tag) => (
-                                  <Badge
-                                    key={tag}
-                                    variant={
-                                      tag === 'Picture Lock' || tag === "Director's Cut"
-                                        ? 'default'
-                                        : 'secondary'
-                                    }
-                                    className="font-mono text-[9px] px-1.5 py-0 gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
-                                  >
-                                    <IconTag className="size-2.5" />
-                                    {tag}
-                                  </Badge>
-                                ))}
-                              </div>
-                            )}
-
-                            <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono pt-1 border-t border-border/30">
-                              <span className="truncate max-w-[120px] flex items-center gap-1">
-                                <IconUser className="size-2.5" /> {commit.author}
-                              </span>
-                              <div className="flex items-center gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="xs"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleOpenDiffWithCommit(commit.id);
-                                  }}
-                                  title="Diff against HEAD"
-                                  className="h-5 px-1.5 text-[9px]"
-                                >
-                                  <IconGitCompare className="size-2.5" /> Diff
-                                </Button>
-                                <Button
-                                  variant="secondary"
-                                  size="xs"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleSelectCommit(commit.id, 'restore');
-                                  }}
-                                >
-                                  <IconArrowBackUp data-icon="inline-start" />
-                                  Restore
-                                </Button>
-                              </div>
+                              {commit.tags && commit.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {commit.tags.map((tag) => (
+                                    <Badge
+                                      key={tag}
+                                      variant="secondary"
+                                      className="font-mono text-[9px] px-1.5 py-0 gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                    >
+                                      <IconTag className="size-2.5" />
+                                      {tag}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        </SidebarMenuItem>
-                      );
-                    })
-                  )}
-                </SidebarMenu>
+                          </SidebarMenuItem>
+                        );
+                      })
+                    )}
+                  </SidebarMenu>
+                )}
               </SidebarGroupContent>
             </SidebarGroup>
           </SidebarContent>
 
           <SidebarFooter className="p-3 border-t border-border flex flex-col gap-2">
-            <div className="flex items-center justify-between text-xs font-mono">
-              <span className="text-muted-foreground">Active HEAD:</span>
-              <Badge variant="outline" className="font-mono text-primary font-bold">
-                {activeHeadId ? `${activeHeadId.slice(0, 8)}...` : 'None'}
-              </Badge>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => fetchCommits()} className="w-full">
+            <Button variant="outline" size="sm" onClick={() => refreshAll()} className="w-full">
               <IconRefresh data-icon="inline-start" />
-              Refresh Commit Log
+              Refresh Versions
             </Button>
           </SidebarFooter>
           <SidebarRail />
         </Sidebar>
 
-        {/* Inset: Timeline Viewer or Diff Inspector */}
+        {/* Main View: Interactive Video Player Monitor & Version Actions */}
         <SidebarInset className="flex-1 flex flex-col bg-background overflow-y-auto">
-          {/* Top Bar inside Inset */}
           <header className="h-12 border-b border-border bg-card/40 px-6 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
               {isDiffMode ? (
                 <>
                   <IconGitCompare className="size-4 text-primary" />
-                  <span className="font-semibold text-foreground">Visual Diff Comparator</span>
+                  <span className="font-semibold text-foreground">Dual Version Comparison</span>
                 </>
               ) : (
                 <>
-                  <IconHistory className="size-4 text-primary" />
-                  <span>Snapshot Inspector</span>
+                  <IconMovie className="size-4 text-primary" />
+                  <span className="font-semibold text-foreground">Version Player & Inspector</span>
                 </>
               )}
               {statusMessage && (
@@ -563,29 +786,8 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                 onClick={() => setIsDiffMode(!isDiffMode)}
               >
                 <IconGitCompare data-icon="inline-start" />
-                {isDiffMode ? 'Exit Diff View' : 'Compare / Diff Saves'}
+                {isDiffMode ? 'Back to Single View' : 'Compare 2 Versions'}
               </Button>
-
-              {!isDiffMode && (
-                <>
-                  <Button
-                    variant={activeTab === 'timeline' ? 'secondary' : 'ghost'}
-                    size="sm"
-                    onClick={() => setActiveTab('timeline')}
-                  >
-                    <IconMovie data-icon="inline-start" />
-                    Timeline View
-                  </Button>
-                  <Button
-                    variant={activeTab === 'json' ? 'secondary' : 'ghost'}
-                    size="sm"
-                    onClick={() => setActiveTab('json')}
-                  >
-                    <IconCode data-icon="inline-start" />
-                    JSON
-                  </Button>
-                </>
-              )}
             </div>
           </header>
 
@@ -603,86 +805,269 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
               </div>
             ) : loadingTimeline ? (
               <div className="h-full flex items-center justify-center">
-                <div className="flex items-center gap-3 text-muted-foreground font-mono text-sm">
+                <div className="flex items-center gap-3 text-muted-foreground text-sm">
                   <div className="size-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                  Reconstructing timeline state from commit...
+                  Loading version media...
                 </div>
               </div>
             ) : timeline ? (
               <div className="max-w-4xl mx-auto flex flex-col gap-6">
-                {/* Snapshot Header Bar with Frame Thumbnail */}
-                <Card className="p-6 bg-card/50">
-                  <div className="flex flex-col md:flex-row items-start md:items-center gap-6 justify-between">
-                    <div className="flex items-start gap-4">
-                      {/* Large Frame Thumbnail */}
-                      <div className="relative aspect-video w-36 md:w-44 rounded-xl overflow-hidden shrink-0 bg-black border border-border shadow-md">
-                        <img
-                          src={`${API_URL}/commits/${timeline.commit_id}/thumbnail`}
-                          alt="Commit Frame"
-                          className="w-full h-full object-cover"
-                        />
+                {/* Main Video Monitor Player Card */}
+                <Card className="p-6 bg-card/50 border border-border flex flex-col gap-4 shadow-md">
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge
+                          variant={timeline.is_head ? 'default' : 'secondary'}
+                          className="font-bold text-xs"
+                        >
+                          {timeline.is_head ? 'ACTIVE PROJECT VERSION' : 'HISTORICAL VERSION PREVIEW'}
+                        </Badge>
+                        <Badge variant="outline" className="font-mono text-xs">
+                          <IconClock className="size-3 text-muted-foreground mr-1" />
+                          {timeline.total_duration.toFixed(1)}s
+                        </Badge>
                       </div>
-
-                      <div className="flex flex-col gap-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge
-                            variant={timeline.is_head ? 'default' : 'secondary'}
-                            className="font-mono font-bold"
-                          >
-                            {timeline.is_head ? 'ACTIVE HEAD' : 'DETACHED PREVIEW'}
-                          </Badge>
-                          <Badge variant="outline" className="font-mono">
-                            <IconClock className="size-3 text-muted-foreground" />
-                            {timeline.total_duration.toFixed(1)}s
-                          </Badge>
-                        </div>
-                        <h2 className="text-2xl font-bold text-foreground tracking-tight">
-                          {timeline.message}
-                        </h2>
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-muted-foreground pt-1">
-                          <span>
-                            Author: <strong className="text-foreground">{timeline.author}</strong>
-                          </span>
-                          <span>•</span>
-                          <span>
-                            Date: <strong className="text-foreground">{timeline.timestamp}</strong>
-                          </span>
-                        </div>
+                      <h2 className="text-2xl font-bold text-foreground tracking-tight mt-1">
+                        {timeline.message}
+                      </h2>
+                      <div className="text-xs text-muted-foreground flex items-center gap-3 mt-1">
+                        <span>Created by: <strong className="text-foreground">{timeline.author}</strong></span>
+                        <span>•</span>
+                        <span>Date: <strong className="text-foreground">{timeline.timestamp}</strong></span>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3 self-start md:self-center">
+                    {/* Prominent Video Action Buttons */}
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={handleOpenInEditor}
+                        className="font-semibold shadow-sm"
+                      >
+                        <IconMovie data-icon="inline-start" />
+                        Open & Edit This Version
+                      </Button>
+
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowSaveAsModal(!showSaveAsModal)}
+                      >
+                        <IconGitBranch data-icon="inline-start" />
+                        Duplicate / Branch
+                      </Button>
+
                       <Button
                         variant="outline"
+                        size="sm"
                         onClick={() => handleOpenDiffWithCommit(timeline.commit_id)}
                       >
                         <IconGitCompare data-icon="inline-start" />
-                        Diff vs HEAD
+                        Compare vs Active
                       </Button>
-                      {!timeline.is_head && (
-                        <Button
-                          onClick={() => handleSelectCommit(timeline.commit_id, 'restore')}
-                          variant="default"
-                        >
-                          <IconArrowBackUp data-icon="inline-start" />
-                          One-Click Revert
-                        </Button>
-                      )}
                     </div>
                   </div>
 
-                  {/* Tags Management Strip */}
-                  <div className="mt-4 pt-4 border-t border-border flex flex-wrap items-center justify-between gap-3">
+                  {/* Branch / Duplicate Version Inline Panel */}
+                  {showSaveAsModal && (
+                    <div className="p-4 bg-background/90 border border-primary/40 rounded-xl flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                          <IconGitBranch className="size-4 text-primary" />
+                          <span>Duplicate into a New Alternative Cut (Branch)</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => setShowSaveAsModal(false)}
+                        >
+                          ✕
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Create a parallel version starting from this exact checkpoint (e.g. Social Media Cut, Director&apos;s Cut) without overwriting your current active edit.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={saveAsMessage}
+                          onChange={(e) => setSaveAsMessage(e.target.value)}
+                          placeholder="Name for this new version cut..."
+                          className="text-xs"
+                        />
+                        <Button
+                          onClick={handleSaveAsNewVersion}
+                          size="sm"
+                          variant="default"
+                          className="shrink-0"
+                        >
+                          <IconDeviceFloppy data-icon="inline-start" />
+                          Create Version
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* LIVE INTERACTIVE VIDEO PLAYER MONITOR */}
+                  <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-border flex items-center justify-center shadow-lg my-1">
+                    {activeHistoryClip?.clip.media_hash || activeMediaHash ? (
+                      <video
+                        ref={videoRef}
+                        src={`${API_URL}/media/${activeHistoryClip?.clip.media_hash || activeMediaHash}`}
+                        className="w-full h-full object-contain"
+                        playsInline
+                        preload="auto"
+                        onTimeUpdate={() => {
+                          const vid = videoRef.current;
+                          if (!vid || !isPlaying) return;
+                          const currentVidTime = vid.currentTime;
+                          if (activeHistoryClip) {
+                            const clipEnd = activeHistoryClip.clip.duration;
+                            if (currentVidTime >= clipEnd - 0.05) {
+                              const currentIndex = clips.findIndex(
+                                (c) => c.id === activeHistoryClip.clip.id
+                              );
+                              if (currentIndex >= 0 && currentIndex < clips.length - 1) {
+                                const nextClip = clips[currentIndex + 1];
+                                setVideoTime(nextClip.start_time);
+                                if (nextClip.media_hash === activeHistoryClip.clip.media_hash) {
+                                  vid.currentTime = 0;
+                                  vid.play().catch(console.warn);
+                                }
+                              } else {
+                                setIsPlaying(false);
+                                setVideoTime(timeline.total_duration);
+                                vid.pause();
+                              }
+                            } else {
+                              setVideoTime(activeHistoryClip.clip.start_time + currentVidTime);
+                            }
+                          } else {
+                            setVideoTime(vid.currentTime);
+                          }
+                        }}
+                        onLoadedMetadata={(e) => {
+                          const dur = (e.target as HTMLVideoElement).duration || 10;
+                          setVideoDuration(dur);
+                          if (videoRef.current && activeHistoryClip) {
+                            videoRef.current.currentTime = activeHistoryClip.videoTime;
+                            if (isPlaying) {
+                              videoRef.current.play().catch(console.warn);
+                            }
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="text-muted-foreground text-xs flex flex-col items-center gap-2 p-8">
+                        <IconVideo className="size-8 text-muted-foreground/50" />
+                        <span>No media linked to this version</span>
+                      </div>
+                    )}
+
+
+                    {/* Version Badge Overlay */}
+                    <div className="absolute top-3 left-3 bg-background/80 border border-border backdrop-blur rounded-lg px-2.5 py-1 text-xs font-semibold">
+                      Preview: {timeline.message}
+                    </div>
+                  </div>
+
+                  {/* Video Playback Transport Controls */}
+                  <div className="flex flex-col gap-2 pt-1">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          onClick={() => handleSeek(0)}
+                          title="Jump to Start"
+                        >
+                          <IconPlayerSkipBack />
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={togglePlay}
+                          className="font-bold"
+                        >
+                          {isPlaying ? (
+                            <>
+                              <IconPlayerPause data-icon="inline-start" /> Pause
+                            </>
+                          ) : (
+                            <>
+                              <IconPlayerPlay data-icon="inline-start" /> Play Video
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          onClick={() => handleSeek(timeline?.total_duration || videoDuration)}
+                          title="Jump to End"
+                        >
+                          <IconPlayerSkipForward />
+                        </Button>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => setIsMuted(!isMuted)}
+                          >
+                            {isMuted ? (
+                              <IconVolumeOff className="size-4 text-destructive" />
+                            ) : (
+                              <IconVolume className="size-4 text-primary" />
+                            )}
+                          </Button>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={isMuted ? 0 : volume}
+                            onChange={(e) => {
+                              const newVol = parseFloat(e.target.value);
+                              setVolume(newVol);
+                              if (isMuted && newVol > 0) setIsMuted(false);
+                            }}
+                            className="w-20 accent-primary cursor-pointer"
+                          />
+                        </div>
+
+                        <Badge variant="outline" className="font-mono text-primary font-bold">
+                          {videoTime.toFixed(2)}s / {(timeline?.total_duration || videoDuration).toFixed(1)}s
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {/* Timeline Playhead Scrubber */}
+                    <input
+                      type="range"
+                      min="0"
+                      max={timeline?.total_duration || videoDuration}
+                      step="0.05"
+                      value={videoTime}
+                      onChange={(e) => handleSeek(parseFloat(e.target.value))}
+                      className="w-full accent-primary cursor-pointer"
+                    />
+                  </div>
+
+
+                  {/* Version Tags Strip */}
+                  <div className="pt-3 border-t border-border flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-mono text-muted-foreground flex items-center gap-1">
-                        <IconTag className="size-3.5" /> Tags:
+                      <span className="text-xs text-muted-foreground flex items-center gap-1 font-medium">
+                        <IconTag className="size-3.5" /> Version Tags:
                       </span>
                       {selectedCommit?.tags && selectedCommit.tags.length > 0 ? (
                         selectedCommit.tags.map((tag) => (
                           <Badge
                             key={tag}
                             variant="secondary"
-                            className="font-mono text-xs gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                            className="text-xs gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40 font-medium"
                           >
                             {tag}
                             <button
@@ -695,19 +1080,19 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                           </Badge>
                         ))
                       ) : (
-                        <span className="text-xs font-mono text-muted-foreground/60 italic">
-                          No tags assigned
+                        <span className="text-xs text-muted-foreground italic">
+                          No tags assigned (e.g. Picture Lock)
                         </span>
                       )}
                     </div>
 
-                    {/* Quick Add Tag / Input */}
+                    {/* Quick Tagging Buttons */}
                     <div className="flex items-center gap-1.5">
                       <Button
                         variant="outline"
                         size="xs"
                         onClick={() => handleAddTag(timeline.commit_id, 'Picture Lock')}
-                        className="font-mono text-[10px]"
+                        className="text-[11px]"
                       >
                         + Picture Lock
                       </Button>
@@ -715,9 +1100,9 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                         variant="outline"
                         size="xs"
                         onClick={() => handleAddTag(timeline.commit_id, "Director's Cut")}
-                        className="font-mono text-[10px]"
+                        className="text-[11px]"
                       >
-                        + Director's Cut
+                        + Director&apos;s Cut
                       </Button>
 
                       {showAddTagForId === timeline.commit_id ? (
@@ -731,7 +1116,7 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                                 handleAddTag(timeline.commit_id, newTagInput);
                               }
                             }}
-                            className="h-6 w-28 text-xs font-mono px-2"
+                            className="h-6 w-28 text-xs px-2"
                           />
                           <Button
                             variant="default"
@@ -753,7 +1138,7 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                           variant="ghost"
                           size="xs"
                           onClick={() => setShowAddTagForId(timeline.commit_id)}
-                          className="font-mono text-[10px]"
+                          className="text-[11px]"
                         >
                           <IconPlus className="size-3" /> Custom Tag
                         </Button>
@@ -762,125 +1147,83 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                   </div>
                 </Card>
 
-                {/* Hashes & Metadata Strip */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs">
-                  <Card className="p-3 bg-card/30">
-                    <div className="text-muted-foreground uppercase tracking-wider text-[10px]">
-                      Commit ID
-                    </div>
-                    <div className="text-foreground font-bold truncate mt-0.5">
-                      {timeline.commit_id}
-                    </div>
-                  </Card>
-                  <Card className="p-3 bg-card/30">
-                    <div className="text-muted-foreground uppercase tracking-wider text-[10px]">
-                      Timeline Hash
-                    </div>
-                    <div className="text-primary font-bold truncate mt-0.5">
-                      {timeline.timeline_hash}
-                    </div>
-                  </Card>
-                  <Card className="p-3 bg-card/30">
-                    <div className="text-muted-foreground uppercase tracking-wider text-[10px]">
-                      Media References
-                    </div>
-                    <div className="text-foreground font-bold mt-0.5">
-                      {timeline.media_refs.length} objects linked
-                    </div>
-                  </Card>
-                </div>
+                {/* Track Clips Layout Strip */}
+                <Card className="p-5 bg-card/40 border border-border flex flex-col gap-4">
+                  <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <IconMovie className="size-4 text-primary" /> Track Segments in This Version
+                    </span>
+                    <span className="text-muted-foreground font-normal">
+                      {timeline.tracks.length} track(s)
+                    </span>
+                  </div>
 
-                {/* Tab Content */}
-                {activeTab === 'timeline' ? (
-                  <Card className="p-6 bg-card/40 flex flex-col gap-6">
-                    {/* Time Ruler */}
-                    <div className="flex justify-between text-[11px] font-mono text-muted-foreground border-b border-border pb-1">
-                      <span>0:00</span>
-                      <span>{(timeline.total_duration * 0.25).toFixed(1)}s</span>
-                      <span>{(timeline.total_duration * 0.5).toFixed(1)}s</span>
-                      <span>{(timeline.total_duration * 0.75).toFixed(1)}s</span>
-                      <span>{timeline.total_duration.toFixed(1)}s</span>
-                    </div>
-
-                    {/* Multi-Track Editor View */}
-                    <div className="flex flex-col gap-4">
-                      {timeline.tracks.map((track) => (
-                        <div key={track.id} className="flex flex-col gap-2">
-                          <div className="flex items-center justify-between text-xs font-mono text-muted-foreground">
-                            <span className="font-semibold text-foreground">{track.name}</span>
-                            <Badge variant="outline" className="text-[10px] uppercase">
-                              {track.track_type}
-                            </Badge>
-                          </div>
-                          <div className="h-16 bg-background border border-border rounded-xl p-2 relative flex gap-2 overflow-x-auto items-center">
-                            {track.clips.map((clip) => {
-                              const widthPercent = Math.max(
-                                15,
-                                (clip.duration / timeline.total_duration) * 100
-                              );
-                              const isVideo = track.track_type === 'video';
-
-                              return (
-                                <div
-                                  key={clip.id}
-                                  style={{ width: `${widthPercent}%` }}
-                                  className={cn(
-                                    'h-full rounded-lg p-2 flex flex-col justify-between text-[11px] font-mono select-none transition-all border',
-                                    isVideo
-                                      ? 'bg-primary/20 border-primary text-foreground'
-                                      : 'bg-secondary/40 border-border text-foreground'
-                                  )}
-                                >
-                                  <div className="font-medium truncate font-sans">{clip.name}</div>
-                                  <div className="flex justify-between items-center text-[9px] text-muted-foreground">
-                                    <span>{clip.duration.toFixed(1)}s</span>
-                                    <span className="truncate max-w-[60px] font-mono">
-                                      {clip.media_hash.slice(0, 6)}
-                                    </span>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                  <div className="flex flex-col gap-3">
+                    {timeline.tracks.map((track) => (
+                      <div key={track.id} className="flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">{track.name}</span>
+                          <Badge variant="outline" className="text-[10px] uppercase">
+                            {track.track_type}
+                          </Badge>
                         </div>
-                      ))}
-                    </div>
-
-                    {/* Media Reference Blobs */}
-                    {timeline.media_refs.length > 0 && (
-                      <div className="pt-4 border-t border-border flex flex-col gap-2">
-                        <h4 className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
-                          Content-Addressed Media Refs (SHA-256)
-                        </h4>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {timeline.media_refs.map((hash, i) => (
-                            <div
-                              key={i}
-                              className="bg-background border border-border rounded-xl p-2.5 text-xs font-mono flex items-center justify-between text-muted-foreground"
-                            >
-                              <Badge variant="outline" className="text-[10px]">
-                                #{i + 1}
-                              </Badge>
-                              <span className="text-primary font-bold truncate max-w-[240px]">
-                                {hash}
-                              </span>
-                            </div>
-                          ))}
+                        <div className="h-14 bg-background border border-border rounded-xl p-2 relative flex gap-2 overflow-x-auto items-center">
+                          {track.clips.map((clip) => {
+                            const isVideo = track.track_type === 'video';
+                            return (
+                              <div
+                                key={clip.id}
+                                className={cn(
+                                  'h-full flex-1 min-w-[120px] rounded-lg p-2 flex flex-col justify-between text-[11px] border',
+                                  isVideo
+                                    ? 'bg-primary/20 border-primary text-foreground'
+                                    : 'bg-secondary/40 border-border text-foreground'
+                                )}
+                              >
+                                <div className="font-semibold truncate">{clip.name}</div>
+                                <div className="text-[9px] text-muted-foreground font-mono">
+                                  {clip.duration.toFixed(1)}s
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    )}
-                  </Card>
-                ) : (
-                  <Card className="p-4 bg-card/40">
-                    <pre className="text-xs font-mono text-primary bg-background p-4 rounded-xl overflow-x-auto max-h-[460px] border border-border">
-                      {JSON.stringify(timeline, null, 2)}
-                    </pre>
-                  </Card>
-                )}
+                    ))}
+                  </div>
+                </Card>
+
+                {/* Collapsible Technical Details for Non-Developers */}
+                <div className="border border-border/60 rounded-xl bg-card/20 p-3">
+                  <button
+                    onClick={() => setShowTechDetails(!showTechDetails)}
+                    className="flex items-center justify-between w-full text-xs text-muted-foreground hover:text-foreground font-medium"
+                  >
+                    <span>Developer & Technical Details</span>
+                    {showTechDetails ? <IconChevronDown className="size-4" /> : <IconChevronRight className="size-4" />}
+                  </button>
+
+                  {showTechDetails && (
+                    <div className="pt-3 mt-2 border-t border-border grid grid-cols-1 md:grid-cols-3 gap-2 font-mono text-[11px]">
+                      <div className="bg-background/60 p-2 rounded-lg border border-border">
+                        <div className="text-muted-foreground text-[9px] uppercase">Commit UUID</div>
+                        <div className="text-foreground truncate">{timeline.commit_id}</div>
+                      </div>
+                      <div className="bg-background/60 p-2 rounded-lg border border-border">
+                        <div className="text-muted-foreground text-[9px] uppercase">Timeline SHA-256</div>
+                        <div className="text-primary truncate">{timeline.timeline_hash}</div>
+                      </div>
+                      <div className="bg-background/60 p-2 rounded-lg border border-border">
+                        <div className="text-muted-foreground text-[9px] uppercase">Parent Checkpoint</div>
+                        <div className="text-foreground truncate">{timeline.parent_id || 'Root (None)'}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
-              <div className="h-full flex items-center justify-center text-muted-foreground font-mono text-sm">
-                Select a commit from the sidebar to preview timeline state.
+              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                Select a version from the left panel to watch its video preview and inspect its clips.
               </div>
             )}
           </main>

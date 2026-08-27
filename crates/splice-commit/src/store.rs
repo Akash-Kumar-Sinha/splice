@@ -13,4 +13,7 @@ pub trait CommitStore: Send + Sync {
     fn remove_tag(&self, commit_id: &CommitId, label: &str) -> Result<bool, StoreError>;
     fn get_tags(&self, commit_id: &CommitId) -> Result<Vec<String>, StoreError>;
     fn list_all_tags(&self) -> Result<Vec<Tag>, StoreError>;
+    fn list_all_commits(&self) -> Result<Vec<Commit>, StoreError>;
+    fn save_timeline(&self, commit_id: &CommitId, timeline_json: &str) -> Result<(), StoreError>;
+    fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError>;
 }

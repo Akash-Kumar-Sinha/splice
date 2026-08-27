@@ -1,6 +1,48 @@
+# Rust build artifacts
 /target
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Splice SQLite databases & WAL logs
+splice.db
+splice.db*
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Media storage, caches & videos
 /videos
-/.agents
-**tests**
-.env
+videos/
 .media_store/
+media_store/
+.media/
+media/
+.thumbnail_cache/
+thumbnail_cache/
+.thumbs/
+thumbs/
+
+# Frontend (Next.js / Node / Bun)
+node_modules/
+splice-web/node_modules/
+splice-web/.next/
+splice-web/out/
+splice-web/build/
+*.tsbuildinfo
+
+# Environment & config
+.env
+.env*.local
+.env.local
+
+# Logs & temp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+
+# Agent skills/rules workspace folders
+/.agents

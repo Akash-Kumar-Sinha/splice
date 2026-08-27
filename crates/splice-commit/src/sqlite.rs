@@ -63,6 +63,10 @@ impl SqliteCommitStore {
                 label TEXT NOT NULL,
                 PRIMARY KEY (commit_id, label)
             );
+            CREATE TABLE IF NOT EXISTS timelines (
+                commit_id TEXT PRIMARY KEY REFERENCES commits(id),
+                timeline_json TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_id);",
         )?;
 
@@ -181,6 +185,38 @@ impl SqliteCommitStore {
         )?;
         stmt.execute(params![id.to_string()])?;
         Ok(())
+    }
+
+    pub fn list_all_commits(&self) -> Result<Vec<Commit>, StoreError> {
+        <Self as CommitStore>::list_all_commits(self)
+    }
+
+    pub fn add_tag(&self, tag: crate::tag::Tag) -> Result<(), StoreError> {
+        <Self as CommitStore>::add_tag(self, tag)
+    }
+
+    pub fn remove_tag(&self, commit_id: &CommitId, label: &str) -> Result<bool, StoreError> {
+        <Self as CommitStore>::remove_tag(self, commit_id, label)
+    }
+
+    pub fn get_tags(&self, commit_id: &CommitId) -> Result<Vec<String>, StoreError> {
+        <Self as CommitStore>::get_tags(self, commit_id)
+    }
+
+    pub fn list_all_tags(&self) -> Result<Vec<crate::tag::Tag>, StoreError> {
+        <Self as CommitStore>::list_all_tags(self)
+    }
+
+    pub fn save_timeline(
+        &self,
+        commit_id: &CommitId,
+        timeline_json: &str,
+    ) -> Result<(), StoreError> {
+        <Self as CommitStore>::save_timeline(self, commit_id, timeline_json)
+    }
+
+    pub fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError> {
+        <Self as CommitStore>::get_timeline(self, commit_id)
     }
 }
 
@@ -357,6 +393,101 @@ impl CommitStore for SqliteCommitStore {
             tags.push(crate::tag::Tag::new(id, label));
         }
         Ok(tags)
+    }
+
+    fn list_all_commits(&self) -> Result<Vec<Commit>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, parent_id, timestamp, author, message, timeline_hash, media_refs
+             FROM commits
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            let parent_str: Option<String> = row.get(1)?;
+            let ts_str: String = row.get(2)?;
+            let author: String = row.get(3)?;
+            let message: String = row.get(4)?;
+            let th_str: String = row.get(5)?;
+            let media_refs_json: String = row.get(6)?;
+
+            let id = CommitId::from_str(&id_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let parent = match parent_str {
+                Some(p) => Some(CommitId::from_str(&p).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
+                None => None,
+            };
+            let timestamp = OffsetDateTime::parse(&ts_str, &Rfc3339).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let timeline_hash = MediaHash::from_hex(&th_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let media_refs: Vec<MediaHash> =
+                serde_json::from_str(&media_refs_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+
+            Ok(Commit::new(
+                id,
+                parent,
+                timestamp,
+                author,
+                message,
+                timeline_hash,
+                media_refs,
+            ))
+        })?;
+
+        let mut commits = Vec::new();
+        for c in rows {
+            commits.push(c?);
+        }
+        Ok(commits)
+    }
+
+    fn save_timeline(&self, commit_id: &CommitId, timeline_json: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO timelines (commit_id, timeline_json)
+             VALUES (?1, ?2)
+             ON CONFLICT(commit_id) DO UPDATE SET timeline_json = excluded.timeline_json",
+        )?;
+        stmt.execute(params![commit_id.to_string(), timeline_json])?;
+        Ok(())
+    }
+
+    fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt =
+            conn.prepare_cached("SELECT timeline_json FROM timelines WHERE commit_id = ?1")?;
+        let json: Option<String> = stmt
+            .query_row(params![commit_id.to_string()], |row| row.get(0))
+            .optional()?;
+        Ok(json)
     }
 }
 

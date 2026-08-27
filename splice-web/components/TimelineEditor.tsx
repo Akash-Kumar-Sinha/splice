@@ -190,13 +190,70 @@ export function useUpload() {
 
 interface TimelineEditorProps {
   headCommitId: string | null;
+  loadedTimeline?: {
+    commit_id: string;
+    message: string;
+    media_refs: string[];
+    tracks?: {
+      id: string;
+      clips: {
+        id: string;
+        name: string;
+        media_hash: string;
+        duration: number;
+        start_time?: number;
+      }[];
+    }[];
+  } | null;
   onCommitSaved?: () => void;
 }
 
-export default function TimelineEditor({ headCommitId, onCommitSaved }: TimelineEditorProps) {
+
+export default function TimelineEditor({
+  headCommitId,
+  loadedTimeline,
+  onCommitSaved,
+}: TimelineEditorProps) {
   const [editorState, setEditorState] = useState<EditorState>({
     tracks: [{ id: 'track-0', clips: [] }],
   });
+
+  // Sync loaded version from History panel when user clicks "Open & Edit This Version"
+  useEffect(() => {
+    if (loadedTimeline && loadedTimeline.media_refs.length > 0) {
+      if (loadedTimeline.tracks && loadedTimeline.tracks[0]?.clips?.length > 0) {
+        const initialClips: Clip[] = loadedTimeline.tracks[0].clips.map((c, idx) => ({
+          id: c.id || `clip-${Date.now()}-${idx}`,
+          media: c.media_hash,
+          in_point: 0,
+          out_point: c.duration,
+          position: c.start_time ?? (idx * 10.0),
+          name: c.name,
+          original_duration: c.duration,
+        }));
+
+        setEditorState({
+          tracks: [{ id: 'track-0', clips: recalculatePositions(initialClips) }],
+        });
+      } else {
+        const initialClips: Clip[] = loadedTimeline.media_refs.map((mediaHash, idx) => ({
+          id: `clip-${Date.now()}-${idx}`,
+          media: mediaHash,
+          in_point: 0,
+          out_point: 10.0,
+          position: idx * 10.0,
+          name: `Clip #${idx + 1} (${mediaHash.slice(0, 6)})`,
+          original_duration: 10.0,
+        }));
+        setEditorState({
+          tracks: [{ id: 'track-0', clips: recalculatePositions(initialClips) }],
+        });
+      }
+      setCommitMessage(`Edit based on: ${loadedTimeline.message}`);
+    }
+  }, [loadedTimeline]);
+
+
   const [playhead, setPlayhead] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -355,6 +412,7 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
     }
   };
 
+
   // Handle video file upload
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -392,7 +450,7 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
 
     setSaveStatus('Saving timeline commit...');
     try {
-      const mediaRefs = Array.from(new Set(primaryTrack.clips.map((c) => c.media)));
+      const mediaRefs = primaryTrack.clips.map((c) => c.media);
       const rawJson = JSON.stringify(editorState);
 
       const msgBuffer = new TextEncoder().encode(rawJson);
@@ -406,7 +464,10 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
         message: commitMessage.trim() || 'Saved timeline edit',
         timeline_hash: timelineHash,
         media_refs: mediaRefs,
+        timeline_raw: editorState,
       };
+
+
 
       const res = await fetch(`${API_URL}/commits`, {
         method: 'POST',
@@ -465,7 +526,7 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
           <Input
             value={commitMessage}
             onChange={(e) => setCommitMessage(e.target.value)}
-            placeholder="Commit snapshot message..."
+            placeholder="Version name / notes..."
             className="w-64 font-mono text-xs"
           />
           <Button
@@ -483,7 +544,7 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
                   const trimAmount = first.original_duration - dur;
                   setCommitMessage(`Trimmed ${first.name} by ${trimAmount.toFixed(1)}s`);
                 } else {
-                  setCommitMessage(`Timeline: ${first.name} (${dur.toFixed(1)}s)`);
+                  setCommitMessage(`Cut: ${first.name} (${dur.toFixed(1)}s)`);
                 }
               } else {
                 setCommitMessage(
@@ -491,17 +552,18 @@ export default function TimelineEditor({ headCommitId, onCommitSaved }: Timeline
                 );
               }
             }}
-            title="Auto-generate smart commit note based on changes"
+            title="Auto-generate smart note based on your edits"
             className="font-mono text-xs"
           >
             <IconSparkles data-icon="inline-start" />
             Auto Note
           </Button>
-          <Button onClick={handleSaveCommit} size="sm" variant="default">
+          <Button onClick={handleSaveCommit} size="sm" variant="default" className="font-semibold">
             <IconDeviceFloppy data-icon="inline-start" />
-            Save Commit Snapshot
+            Save Project Version
           </Button>
         </div>
+
 
       </div>
 

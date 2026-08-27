@@ -5,7 +5,7 @@ import { IconTimeline, IconHistory, IconSparkles } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import HistoryPanel, { Commit } from './HistoryPanel';
+import HistoryPanel, { Commit, Timeline } from './HistoryPanel';
 import TimelineEditor from './TimelineEditor';
 
 interface AppWorkspaceProps {
@@ -15,6 +15,7 @@ interface AppWorkspaceProps {
 export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
   const [commits, setCommits] = useState<Commit[]>(initialCommits);
   const [activeTab, setActiveTab] = useState<'editor' | 'history'>('editor');
+  const [loadedTimeline, setLoadedTimeline] = useState<Timeline | null>(null);
 
   const headCommitId = commits.length > 0 ? commits[0].id : null;
 
@@ -31,9 +32,14 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
     }
   };
 
+  const handleOpenVersionInEditor = (tl: Timeline) => {
+    setLoadedTimeline(tl);
+    setActiveTab('editor');
+  };
+
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden">
-      {/* Top Workspace Bar */}
+      {/* Top Workspace Navigation Bar */}
       <header className="h-14 bg-card/80 border-b border-border px-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <div className="size-3 rounded-full bg-primary animate-pulse" />
@@ -47,7 +53,7 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
         </div>
 
         {/* Mode Switcher */}
-        <div className="flex bg-muted/40 p-1 rounded-xl border border-border gap-1 text-xs font-mono">
+        <div className="flex bg-muted/40 p-1 rounded-xl border border-border gap-1 text-xs">
           <Button
             variant={activeTab === 'editor' ? 'default' : 'ghost'}
             size="sm"
@@ -65,12 +71,12 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
             }}
           >
             <IconHistory data-icon="inline-start" />
-            Commit History ({commits.length})
+            Version History ({commits.length})
           </Button>
         </div>
 
-        <div className="text-xs font-mono text-muted-foreground flex items-center gap-1.5">
-          <span>HEAD:</span>
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <span>Active Cut:</span>
           <Badge variant="outline" className="font-mono text-primary font-bold">
             {headCommitId ? `${headCommitId.slice(0, 8)}...` : 'None'}
           </Badge>
@@ -82,12 +88,16 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
         {activeTab === 'editor' ? (
           <TimelineEditor
             headCommitId={headCommitId}
+            loadedTimeline={loadedTimeline}
             onCommitSaved={() => {
               refreshCommits();
             }}
           />
         ) : (
-          <HistoryPanel initialCommits={commits} />
+          <HistoryPanel
+            initialCommits={commits}
+            onOpenInEditor={handleOpenVersionInEditor}
+          />
         )}
       </div>
     </div>

@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use splice_commit::{Commit, CommitId, CommitStore, StoreError, Tag};
+use splice_commit::{Commit, CommitId, CommitStore, CommitTreeNode, StoreError, Tag};
 use splice_diff::TimelineDiff;
 use splice_media::{MediaHash, MediaStore};
 use splice_render::{
@@ -26,7 +26,10 @@ use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
-pub use timeline::{RevertMode, Timeline, TimelineClip, TimelineTrack};
+pub use timeline::{
+    RawEditorClip, RawEditorState, RawEditorTrack, RevertMode, Timeline, TimelineClip,
+    TimelineTrack,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -65,6 +68,22 @@ pub struct NewCommitRequest {
     pub timeline_hash: MediaHash,
     #[serde(default)]
     pub media_refs: Vec<MediaHash>,
+    #[serde(default)]
+    pub timeline_raw: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SaveAsRequest {
+    pub from: CommitId,
+    pub message: String,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub timeline_hash: Option<MediaHash>,
+    #[serde(default)]
+    pub media_refs: Option<Vec<MediaHash>>,
+    #[serde(default)]
+    pub timeline_raw: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +239,12 @@ pub async fn create_commit(
 
     let id = state.commit_store.append(commit)?;
 
+    if let Some(timeline_raw) = req.timeline_raw {
+        let _ = state
+            .commit_store
+            .save_timeline(&id, &timeline_raw.to_string());
+    }
+
     // CRITICAL: Submit asynchronous background job to generate frame thumbnail without blocking save path
     if let Some(media_path) = req
         .media_refs
@@ -237,6 +262,70 @@ pub async fn create_commit(
     Ok((StatusCode::CREATED, Json(id)))
 }
 
+pub async fn save_as_new_version(
+    State(state): State<AppState>,
+    Json(req): Json<SaveAsRequest>,
+) -> Result<(StatusCode, Json<CommitId>), ApiError> {
+    if req.message.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "Commit message cannot be empty".to_string(),
+        ));
+    }
+
+    let parent_commit = state.commit_store.get(&req.from)?;
+    let new_id = CommitId::new();
+
+    let timeline_hash = req.timeline_hash.unwrap_or(parent_commit.timeline_hash);
+    let media_refs = req.media_refs.unwrap_or(parent_commit.media_refs);
+    let author = req
+        .author
+        .unwrap_or_else(|| "editor@splice.dev".to_string());
+
+    let commit = Commit::new(
+        new_id,
+        Some(req.from),
+        OffsetDateTime::now_utc(),
+        author,
+        req.message.trim().to_string(),
+        timeline_hash,
+        media_refs.clone(),
+    );
+
+    let id = state.commit_store.append(commit)?;
+
+    if let Some(timeline_raw) = req.timeline_raw {
+        let _ = state
+            .commit_store
+            .save_timeline(&id, &timeline_raw.to_string());
+    } else if let Ok(Some(parent_tl_json)) = state.commit_store.get_timeline(&req.from) {
+        let _ = state.commit_store.save_timeline(&id, &parent_tl_json);
+    }
+
+    if let Some(media_path) = media_refs
+        .first()
+        .and_then(|m| state.media_store.resolve(m))
+    {
+        let job = ThumbnailJob {
+            commit_id: id.to_string(),
+            media_path,
+            at: Duration::from_secs(1),
+        };
+        state.thumbnail_queue.submit(job);
+    }
+
+    Ok((StatusCode::CREATED, Json(id)))
+}
+
+pub async fn get_commit_tree(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CommitTreeNode>>, ApiError> {
+    let all_commits = state.commit_store.list_all_commits()?;
+    let tree = splice_commit::build_commit_tree(&all_commits, |id| {
+        state.commit_store.get_tags(id).unwrap_or_default()
+    });
+    Ok(Json(tree))
+}
+
 pub async fn get_commits_diff(
     State(state): State<AppState>,
     Query(query): Query<DiffQuery>,
@@ -244,8 +333,27 @@ pub async fn get_commits_diff(
     let commit_a = state.commit_store.get(&query.from)?;
     let commit_b = state.commit_store.get(&query.to)?;
 
-    let tl_a = splice_commit::Timeline::from_commit(&commit_a);
-    let tl_b = splice_commit::Timeline::from_commit(&commit_b);
+    let tl_a = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&query.from) {
+        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+            Timeline::from_raw_state(&commit_a, &raw_state, RevertMode::Preview, false)
+                .to_splice_commit_timeline()
+        } else {
+            splice_commit::Timeline::from_commit(&commit_a)
+        }
+    } else {
+        splice_commit::Timeline::from_commit(&commit_a)
+    };
+
+    let tl_b = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&query.to) {
+        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+            Timeline::from_raw_state(&commit_b, &raw_state, RevertMode::Preview, false)
+                .to_splice_commit_timeline()
+        } else {
+            splice_commit::Timeline::from_commit(&commit_b)
+        }
+    } else {
+        splice_commit::Timeline::from_commit(&commit_b)
+    };
 
     let diff = splice_diff::diff(&tl_a, &tl_b);
     Ok(Json(diff))
@@ -270,7 +378,6 @@ pub async fn revert(
         .or(query.mode)
         .unwrap_or(RevertMode::Preview);
 
-    // CRITICAL: Stash-before-revert creates an auto-checkpoint commit for dirty working state
     if let Some(changes) = payload
         .as_ref()
         .and_then(|p| p.uncommitted_changes.as_ref())
@@ -285,26 +392,47 @@ pub async fn revert(
             changes.timeline_hash,
             changes.media_refs.clone(),
         );
-        let _ = state.commit_store.append(stash_commit)?;
+        let stash_id = state.commit_store.append(stash_commit)?;
+        if let Some(timeline_raw) = &changes.timeline_raw {
+            let _ = state
+                .commit_store
+                .save_timeline(&stash_id, &timeline_raw.to_string());
+        }
     }
 
-    // CRITICAL: Fetch target commit to verify existence prior to state transition
     let target_commit = state.commit_store.get(&id)?;
 
     let is_head = match mode {
         RevertMode::Preview => {
-            // INFO: In Preview mode (detached HEAD), inspect state without altering HEAD ref
             let current_head = state.commit_store.head_id()?;
             current_head == Some(id)
         }
         RevertMode::Restore => {
-            // CRITICAL: In Restore mode, update HEAD reference to make target commit active HEAD
             state.commit_store.set_head(&id)?;
             true
         }
     };
 
-    let timeline = Timeline::reconstruct(&target_commit, mode, is_head);
+    let timeline = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
+        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+            Timeline::from_raw_state(&target_commit, &raw_state, mode, is_head)
+        } else {
+            Timeline::reconstruct(
+                &target_commit,
+                mode,
+                is_head,
+                Some(state.media_store.as_ref()),
+            )
+        }
+    } else {
+        Timeline::reconstruct(
+            &target_commit,
+            mode,
+            is_head,
+            Some(state.media_store.as_ref()),
+        )
+    };
+
     Ok(Json(timeline))
 }
 
@@ -361,14 +489,12 @@ pub async fn serve_media(
         .resolve(&hash)
         .ok_or(ApiError::MediaNotFound(hash))?;
 
-    // INFO: ServeFile handles HTTP byte ranges (206 Partial Content) for smooth HTML5 video seeking
     let service = ServeFile::new(path);
     let mut res = match service.oneshot(req).await {
         Ok(res) => res,
         Err(never) => match never {},
     };
 
-    // CRITICAL: Ensure Content-Type is video/mp4 so browsers correctly initialize audio and video decoders
     let is_octet_stream = res
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -391,14 +517,12 @@ pub async fn get_commit_thumbnail(
 ) -> Result<impl IntoResponse, ApiError> {
     let id_str = id.to_string();
 
-    // Check cached thumbnail
     if let Some(cached_bytes) = state.thumbnail_cache.get(&id_str) {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
         return Ok((StatusCode::OK, headers, cached_bytes));
     }
 
-    // Try generating from commit media ref
     let commit = state.commit_store.get(&id)?;
     let bytes = if let Some(media_hash) = commit.media_refs.first() {
         if let Some(path) = state.media_store.resolve(media_hash) {
@@ -464,14 +588,15 @@ pub fn router(
         thumbnail_generator,
     );
 
-    // INFO: CorsLayer permits frontend on local dev ports to interact with the API
     let cors = CorsLayer::permissive();
 
     Router::new()
         .route("/commits", get(list_commits).post(create_commit))
+        .route("/commits/tree", get(get_commit_tree))
+        .route("/commits/save-as", post(save_as_new_version))
         .route("/commits/diff", get(get_commits_diff))
         .route("/diff", post(compute_timeline_diff))
-        .route("/commits/:id/revert", post(revert))
+        .route("/commits/:id/revert", post(revert).get(revert))
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
         .route("/commits/:id/tags", post(add_commit_tag))
         .route("/commits/:id/tags/:label", delete(remove_commit_tag))
