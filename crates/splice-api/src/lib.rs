@@ -4,16 +4,21 @@ pub mod timeline;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Multipart, Path as AxumPath, Query, State};
-use axum::http::{Request, StatusCode};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use splice_commit::{Commit, CommitId, CommitStore, StoreError};
+use splice_commit::{Commit, CommitId, CommitStore, StoreError, Tag};
 use splice_media::{MediaHash, MediaStore};
+use splice_render::{
+    FfmpegThumbnailer, FsThumbnailCache, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
+};
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
 use tower::ServiceExt;
@@ -26,13 +31,27 @@ pub use timeline::{RevertMode, Timeline, TimelineClip, TimelineTrack};
 pub struct AppState {
     pub commit_store: Arc<dyn CommitStore>,
     pub media_store: Arc<dyn MediaStore>,
+    pub thumbnail_cache: FsThumbnailCache,
+    pub thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+    pub thumbnail_queue: ThumbnailQueue,
 }
 
 impl AppState {
-    pub fn new(commit_store: Arc<dyn CommitStore>, media_store: Arc<dyn MediaStore>) -> Self {
+    pub fn new(
+        commit_store: Arc<dyn CommitStore>,
+        media_store: Arc<dyn MediaStore>,
+        thumbnail_cache: FsThumbnailCache,
+        thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+    ) -> Self {
+        let thumbnail_queue =
+            ThumbnailQueue::new(thumbnail_cache.clone(), thumbnail_generator.clone(), 64);
+
         Self {
             commit_store,
             media_store,
+            thumbnail_cache,
+            thumbnail_generator,
+            thumbnail_queue,
         }
     }
 }
@@ -45,6 +64,18 @@ pub struct NewCommitRequest {
     pub timeline_hash: MediaHash,
     #[serde(default)]
     pub media_refs: Vec<MediaHash>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitResponse {
+    pub id: CommitId,
+    pub parent: Option<CommitId>,
+    pub timestamp: OffsetDateTime,
+    pub author: String,
+    pub message: String,
+    pub timeline_hash: MediaHash,
+    pub media_refs: Vec<MediaHash>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -67,6 +98,11 @@ pub struct UploadResponse {
     pub duration: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagRequest {
+    pub label: String,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ApiError {
     #[error("Commit store error: {0}")]
@@ -80,6 +116,9 @@ pub enum ApiError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Thumbnail error: {0}")]
+    Thumbnail(#[from] splice_render::ThumbError),
 }
 
 impl IntoResponse for ApiError {
@@ -128,26 +167,60 @@ pub fn probe_duration(path: &Path) -> f64 {
     }
 }
 
-pub async fn list_commits(State(state): State<AppState>) -> Result<Json<Vec<Commit>>, ApiError> {
+pub async fn list_commits(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CommitResponse>>, ApiError> {
     let commits = state.commit_store.chain_from_head()?;
-    Ok(Json(commits))
+    let mut responses = Vec::with_capacity(commits.len());
+
+    for c in commits {
+        let tags = state.commit_store.get_tags(&c.id).unwrap_or_default();
+        responses.push(CommitResponse {
+            id: c.id,
+            parent: c.parent,
+            timestamp: c.timestamp,
+            author: c.author,
+            message: c.message,
+            timeline_hash: c.timeline_hash,
+            media_refs: c.media_refs,
+            tags,
+        });
+    }
+
+    Ok(Json(responses))
 }
 
 pub async fn create_commit(
     State(state): State<AppState>,
     Json(req): Json<NewCommitRequest>,
 ) -> Result<(StatusCode, Json<CommitId>), ApiError> {
+    let commit_id = CommitId::new();
     let commit = Commit::new(
-        CommitId::new(),
+        commit_id,
         req.parent,
         OffsetDateTime::now_utc(),
         req.author,
         req.message,
         req.timeline_hash,
-        req.media_refs,
+        req.media_refs.clone(),
     );
 
     let id = state.commit_store.append(commit)?;
+
+    // CRITICAL: Submit asynchronous background job to generate frame thumbnail without blocking save path
+    if let Some(media_path) = req
+        .media_refs
+        .first()
+        .and_then(|m| state.media_store.resolve(m))
+    {
+        let job = ThumbnailJob {
+            commit_id: id.to_string(),
+            media_path,
+            at: Duration::from_secs(1),
+        };
+        state.thumbnail_queue.submit(job);
+    }
+
     Ok((StatusCode::CREATED, Json(id)))
 }
 
@@ -278,8 +351,84 @@ pub async fn serve_media(
     Ok(res.into_response())
 }
 
-pub fn router(commit_store: Arc<dyn CommitStore>, media_store: Arc<dyn MediaStore>) -> Router {
-    let state = AppState::new(commit_store, media_store);
+pub async fn get_commit_thumbnail(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<CommitId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let id_str = id.to_string();
+
+    // Check cached thumbnail
+    if let Some(cached_bytes) = state.thumbnail_cache.get(&id_str) {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+        return Ok((StatusCode::OK, headers, cached_bytes));
+    }
+
+    // Try generating from commit media ref
+    let commit = state.commit_store.get(&id)?;
+    let bytes = if let Some(media_hash) = commit.media_refs.first() {
+        if let Some(path) = state.media_store.resolve(media_hash) {
+            match state
+                .thumbnail_generator
+                .generate(&path, Duration::from_secs(1))
+            {
+                Ok(generated) => {
+                    let _ = state.thumbnail_cache.put(&id_str, &generated);
+                    generated
+                }
+                Err(_) => FfmpegThumbnailer::generate_fallback_jpeg(&commit.message),
+            }
+        } else {
+            FfmpegThumbnailer::generate_fallback_jpeg(&commit.message)
+        }
+    } else {
+        FfmpegThumbnailer::generate_fallback_jpeg(&commit.message)
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    Ok((StatusCode::OK, headers, bytes))
+}
+
+pub async fn add_commit_tag(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<CommitId>,
+    Json(req): Json<TagRequest>,
+) -> Result<StatusCode, ApiError> {
+    if req.label.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "Tag label cannot be empty".to_string(),
+        ));
+    }
+    state.commit_store.add_tag(Tag::new(id, req.label.trim()))?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn remove_commit_tag(
+    State(state): State<AppState>,
+    AxumPath((id, label)): AxumPath<(CommitId, String)>,
+) -> Result<StatusCode, ApiError> {
+    state.commit_store.remove_tag(&id, &label)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_all_tags(State(state): State<AppState>) -> Result<Json<Vec<Tag>>, ApiError> {
+    let tags = state.commit_store.list_all_tags()?;
+    Ok(Json(tags))
+}
+
+pub fn router(
+    commit_store: Arc<dyn CommitStore>,
+    media_store: Arc<dyn MediaStore>,
+    thumbnail_cache: FsThumbnailCache,
+    thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+) -> Router {
+    let state = AppState::new(
+        commit_store,
+        media_store,
+        thumbnail_cache,
+        thumbnail_generator,
+    );
 
     // INFO: CorsLayer permits frontend on local dev ports to interact with the API
     let cors = CorsLayer::permissive();
@@ -287,6 +436,10 @@ pub fn router(commit_store: Arc<dyn CommitStore>, media_store: Arc<dyn MediaStor
     Router::new()
         .route("/commits", get(list_commits).post(create_commit))
         .route("/commits/:id/revert", post(revert))
+        .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
+        .route("/commits/:id/tags", post(add_commit_tag))
+        .route("/commits/:id/tags/:label", delete(remove_commit_tag))
+        .route("/tags", get(list_all_tags))
         .route("/media", post(upload_media))
         .route("/media/:hash", get(serve_media))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024))

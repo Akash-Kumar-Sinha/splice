@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use splice_api::router;
-use splice_api::seed::seed_if_empty;
 use splice_commit::SqliteCommitStore;
 use splice_media::FsMediaStore;
+use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,19 +19,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".media_store"));
 
-    let commit_store = SqliteCommitStore::open(&db_path)?;
-    // INFO: Seed initial commits if database is empty so frontend shows commits immediately
-    let seeded = seed_if_empty(&commit_store)?;
-    if seeded > 0 {
-        tracing::info!("Seeded {seeded} initial commits into database at {db_path:?}");
-    }
+    let thumb_path = std::env::var("THUMBNAIL_CACHE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".thumbnail_cache"));
 
+    let commit_store = SqliteCommitStore::open(&db_path)?;
     let media_store = FsMediaStore::init(&media_path)?;
+    let thumb_cache = FsThumbnailCache::init(&thumb_path)?;
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
 
     let commit_store = Arc::new(commit_store);
     let media_store = Arc::new(media_store);
 
-    let app = router(commit_store, media_store);
+    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
 
     let port: u16 = std::env::var("PORT")
         .ok()

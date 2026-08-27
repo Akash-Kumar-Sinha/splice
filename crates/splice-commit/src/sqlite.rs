@@ -58,6 +58,11 @@ impl SqliteCommitStore {
                 name TEXT PRIMARY KEY,
                 commit_id TEXT NOT NULL REFERENCES commits(id)
             );
+            CREATE TABLE IF NOT EXISTS tags (
+                commit_id TEXT NOT NULL REFERENCES commits(id),
+                label TEXT NOT NULL,
+                PRIMARY KEY (commit_id, label)
+            );
             CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_id);",
         )?;
 
@@ -290,6 +295,68 @@ impl CommitStore for SqliteCommitStore {
 
     fn set_head(&self, id: &CommitId) -> Result<(), StoreError> {
         self.set_head(id)
+    }
+
+    fn add_tag(&self, tag: crate::tag::Tag) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let commit_str = tag.commit_id.to_string();
+        let mut check = conn.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+        let exists = check
+            .query_row(params![&commit_str], |_| Ok(true))
+            .optional()?
+            .unwrap_or(false);
+        if !exists {
+            return Err(StoreError::CommitNotFound(tag.commit_id));
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO tags (commit_id, label) VALUES (?1, ?2)
+             ON CONFLICT(commit_id, label) DO NOTHING",
+        )?;
+        stmt.execute(params![&commit_str, &tag.label])?;
+        Ok(())
+    }
+
+    fn remove_tag(&self, commit_id: &CommitId, label: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let commit_str = commit_id.to_string();
+        let mut stmt =
+            conn.prepare_cached("DELETE FROM tags WHERE commit_id = ?1 AND label = ?2")?;
+        let count = stmt.execute(params![&commit_str, label])?;
+        Ok(count > 0)
+    }
+
+    fn get_tags(&self, commit_id: &CommitId) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let commit_str = commit_id.to_string();
+        let mut stmt =
+            conn.prepare_cached("SELECT label FROM tags WHERE commit_id = ?1 ORDER BY label ASC")?;
+        let rows = stmt.query_map(params![&commit_str], |row| row.get(0))?;
+        let mut tags = Vec::new();
+        for tag in rows {
+            tags.push(tag?);
+        }
+        Ok(tags)
+    }
+
+    fn list_all_tags(&self) -> Result<Vec<crate::tag::Tag>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt =
+            conn.prepare_cached("SELECT commit_id, label FROM tags ORDER BY label ASC")?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            let label: String = row.get(1)?;
+            Ok((id_str, label))
+        })?;
+
+        let mut tags = Vec::new();
+        for row in rows {
+            let (id_str, label) = row?;
+            let id = CommitId::from_str(&id_str)
+                .map_err(|e| StoreError::Time(format!("invalid commit id in tag: {e}")))?;
+            tags.push(crate::tag::Tag::new(id, label));
+        }
+        Ok(tags)
     }
 }
 

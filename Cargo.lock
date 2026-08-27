@@ -849,6 +849,7 @@ dependencies = [
  "serde_json",
  "splice-commit",
  "splice-media",
+ "splice-render",
  "tempfile",
  "thiserror",
  "time",
@@ -884,6 +885,19 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "splice-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "splice-media",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

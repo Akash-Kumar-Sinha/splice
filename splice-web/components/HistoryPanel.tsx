@@ -10,6 +10,11 @@ import {
   IconUser,
   IconMovie,
   IconCode,
+  IconStar,
+  IconStarFilled,
+  IconTag,
+  IconFilter,
+  IconPlus,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -42,6 +47,7 @@ export interface Commit {
   message: string;
   timeline_hash: string;
   media_refs: string[];
+  tags: string[];
 }
 
 export interface TimelineClip {
@@ -102,6 +108,10 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [starredOnly, setStarredOnly] = useState<boolean>(false);
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
+  const [newTagInput, setNewTagInput] = useState<string>('');
+  const [showAddTagForId, setShowAddTagForId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'timeline' | 'json'>('timeline');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -141,61 +151,186 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
     }
   };
 
+  const handleAddTag = async (commitId: string, label: string) => {
+    if (!label.trim()) return;
+    try {
+      const res = await fetch(`${API_URL}/commits/${commitId}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (res.ok) {
+        setNewTagInput('');
+        setShowAddTagForId(null);
+        setStatusMessage(`Added tag "${label}"`);
+        await fetchCommits();
+      }
+    } catch (err) {
+      console.error('Error adding tag:', err);
+    }
+  };
+
+  const handleRemoveTag = async (commitId: string, label: string) => {
+    try {
+      const res = await fetch(
+        `${API_URL}/commits/${commitId}/tags/${encodeURIComponent(label)}`,
+        {
+          method: 'DELETE',
+        }
+      );
+      if (res.ok) {
+        setStatusMessage(`Removed tag "${label}"`);
+        await fetchCommits();
+      }
+    } catch (err) {
+      console.error('Error removing tag:', err);
+    }
+  };
+
+  const handleToggleStar = async (commit: Commit) => {
+    const isStarred = commit.tags.includes('Picture Lock') || commit.tags.includes('Starred');
+    if (isStarred) {
+      if (commit.tags.includes('Picture Lock')) {
+        await handleRemoveTag(commit.id, 'Picture Lock');
+      }
+      if (commit.tags.includes('Starred')) {
+        await handleRemoveTag(commit.id, 'Starred');
+      }
+    } else {
+      await handleAddTag(commit.id, 'Picture Lock');
+    }
+  };
+
   useEffect(() => {
     if (selectedCommitId) {
       handleSelectCommit(selectedCommitId, 'preview');
     }
   }, []);
 
-  const filteredCommits = commits.filter(
-    (c) =>
+  // Collect all unique tags across commits
+  const allUniqueTags = Array.from(new Set(commits.flatMap((c) => c.tags || [])));
+
+  const filteredCommits = commits.filter((c) => {
+    const matchesSearch =
       c.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.timeline_hash.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+      c.timeline_hash.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.tags?.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
+
+    const isStarred =
+      c.tags?.includes('Picture Lock') ||
+      c.tags?.includes("Director's Cut") ||
+      c.tags?.includes('Starred') ||
+      (c.tags && c.tags.length > 0);
+
+    const matchesStarred = starredOnly ? isStarred : true;
+    const matchesTagFilter = selectedTagFilter ? c.tags?.includes(selectedTagFilter) : true;
+
+    return matchesSearch && matchesStarred && matchesTagFilter;
+  });
+
+  const selectedCommit = commits.find((c) => c.id === selectedCommitId);
 
   return (
     <SidebarProvider className="h-full">
       <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground">
         {/* Shadcn Sidebar */}
-        <Sidebar className="border-r border-border bg-card/40 w-80 shrink-0" collapsible="none">
-          <SidebarHeader className="p-3 border-b border-border gap-2">
+        <Sidebar className="border-r border-border bg-card/40 w-96 shrink-0" collapsible="none">
+          <SidebarHeader className="p-3 border-b border-border flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
                 <IconHistory className="size-4 text-primary" />
-                <span>Snapshots</span>
+                <span>Snapshots & Tags</span>
               </div>
               <Badge variant="secondary" className="font-mono text-[10px]">
-                {commits.length}
+                {filteredCommits.length} / {commits.length}
               </Badge>
             </div>
+
+            {/* Search Input */}
             <div className="relative">
               <IconSearch className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
               <Input
-                placeholder="Filter history..."
+                placeholder="Filter commits, tags, messages..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-8 h-8 text-xs font-mono"
               />
             </div>
+
+            {/* Filter Toggle Buttons */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <Button
+                variant={starredOnly ? 'default' : 'outline'}
+                size="xs"
+                onClick={() => {
+                  setStarredOnly(!starredOnly);
+                  setSelectedTagFilter(null);
+                }}
+                className="font-mono text-[10px]"
+              >
+                {starredOnly ? <IconStarFilled className="size-3" /> : <IconStar className="size-3" />}
+                {starredOnly ? 'Tagged Only' : 'Show All'}
+              </Button>
+
+              {allUniqueTags.map((tag) => (
+                <Button
+                  key={tag}
+                  variant={selectedTagFilter === tag ? 'secondary' : 'ghost'}
+                  size="xs"
+                  onClick={() => {
+                    setSelectedTagFilter(selectedTagFilter === tag ? null : tag);
+                  }}
+                  className={cn(
+                    'font-mono text-[10px] h-6 px-2',
+                    selectedTagFilter === tag && 'border border-primary'
+                  )}
+                >
+                  <IconTag className="size-2.5" />
+                  {tag}
+                </Button>
+              ))}
+            </div>
           </SidebarHeader>
 
           <SidebarContent className="p-2">
             <SidebarGroup className="p-0">
-              <SidebarGroupLabel className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground px-2 py-1">
-                Linear Commit Chain
+              <SidebarGroupLabel className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
+                <span>Commit History Chain</span>
+                {starredOnly && (
+                  <Badge variant="outline" className="text-[9px] text-primary">
+                    Filtered
+                  </Badge>
+                )}
               </SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu className="gap-1.5">
                   {filteredCommits.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground text-xs font-mono">
-                      No matching commits
+                    <div className="text-center py-10 text-muted-foreground text-xs font-mono flex flex-col items-center gap-2">
+                      <IconFilter className="size-6 text-muted-foreground/40" />
+                      <span>No matching snapshots found</span>
+                      {starredOnly && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => {
+                            setStarredOnly(false);
+                            setSelectedTagFilter(null);
+                          }}
+                        >
+                          Clear Tag Filter
+                        </Button>
+                      )}
                     </div>
                   ) : (
                     filteredCommits.map((commit) => {
                       const isSelected = selectedCommitId === commit.id;
                       const isHead = activeHeadId === commit.id;
+                      const hasStarTag =
+                        commit.tags?.includes('Picture Lock') ||
+                        commit.tags?.includes("Director's Cut") ||
+                        commit.tags?.includes('Starred');
                       const snapshotNumber =
                         commits.length - 1 - commits.findIndex((c) => c.id === commit.id);
 
@@ -204,45 +339,96 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                           <div
                             onClick={() => handleSelectCommit(commit.id, 'preview')}
                             className={cn(
-                              'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-1.5 cursor-pointer',
+                              'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-2 cursor-pointer relative',
                               isSelected
                                 ? 'bg-card border-primary/60 shadow-sm'
                                 : 'bg-card/20 hover:bg-card/60 border-border/40'
                             )}
                           >
-                            <div className="flex items-start justify-between gap-1">
-                              <div className="flex items-center gap-1">
-                                <Badge
-                                  variant="outline"
-                                  className="font-mono text-[9px] px-1 py-0"
-                                >
-                                  #{snapshotNumber}
-                                </Badge>
-                                {isHead && (
-                                  <Badge
-                                    variant="default"
-                                    className="font-mono text-[9px] px-1 py-0"
-                                  >
-                                    HEAD
-                                  </Badge>
-                                )}
-                                {isSelected && !isHead && (
-                                  <Badge
-                                    variant="secondary"
-                                    className="font-mono text-[9px] px-1 py-0 text-primary"
-                                  >
-                                    PREVIEW
-                                  </Badge>
-                                )}
+                            <div className="flex gap-2.5 items-start">
+                              {/* Visual Frame Thumbnail */}
+                              <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+                                <img
+                                  src={`${API_URL}/commits/${commit.id}/thumbnail`}
+                                  alt="Frame Thumbnail"
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    (e.target as HTMLElement).style.display = 'none';
+                                  }}
+                                />
                               </div>
-                              <span className="text-[10px] font-mono text-muted-foreground">
-                                {commit.timestamp.slice(11, 19)}
-                              </span>
+
+                              <div className="flex-1 min-w-0 flex flex-col gap-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    <Badge
+                                      variant="outline"
+                                      className="font-mono text-[9px] px-1 py-0"
+                                    >
+                                      #{snapshotNumber}
+                                    </Badge>
+                                    {isHead && (
+                                      <Badge
+                                        variant="default"
+                                        className="font-mono text-[9px] px-1 py-0"
+                                      >
+                                        HEAD
+                                      </Badge>
+                                    )}
+                                    {isSelected && !isHead && (
+                                      <Badge
+                                        variant="secondary"
+                                        className="font-mono text-[9px] px-1 py-0 text-primary"
+                                      >
+                                        PREVIEW
+                                      </Badge>
+                                    )}
+                                  </div>
+
+                                  {/* Star / Tag button */}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleStar(commit);
+                                    }}
+                                    title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
+                                    className="size-5 hover:text-amber-400"
+                                  >
+                                    {hasStarTag ? (
+                                      <IconStarFilled className="size-3.5 text-amber-400" />
+                                    ) : (
+                                      <IconStar className="size-3.5 text-muted-foreground" />
+                                    )}
+                                  </Button>
+                                </div>
+
+                                <div className="font-medium text-xs text-foreground line-clamp-1">
+                                  {commit.message}
+                                </div>
+                              </div>
                             </div>
 
-                            <div className="font-medium text-xs text-foreground line-clamp-2">
-                              {commit.message}
-                            </div>
+                            {/* Tags List */}
+                            {commit.tags && commit.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {commit.tags.map((tag) => (
+                                  <Badge
+                                    key={tag}
+                                    variant={
+                                      tag === 'Picture Lock' || tag === "Director's Cut"
+                                        ? 'default'
+                                        : 'secondary'
+                                    }
+                                    className="font-mono text-[9px] px-1.5 py-0 gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                  >
+                                    <IconTag className="size-2.5" />
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
 
                             <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono pt-1 border-t border-border/30">
                               <span className="truncate max-w-[120px] flex items-center gap-1">
@@ -330,33 +516,44 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
               </div>
             ) : timeline ? (
               <div className="max-w-4xl mx-auto flex flex-col gap-6">
-                {/* Snapshot Header Bar */}
+                {/* Snapshot Header Bar with Frame Thumbnail */}
                 <Card className="p-6 bg-card/50">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant={timeline.is_head ? 'default' : 'secondary'}
-                          className="font-mono font-bold"
-                        >
-                          {timeline.is_head ? 'ACTIVE HEAD' : 'DETACHED PREVIEW'}
-                        </Badge>
-                        <Badge variant="outline" className="font-mono">
-                          <IconClock className="size-3 text-muted-foreground" />
-                          Duration: {timeline.total_duration.toFixed(1)}s
-                        </Badge>
+                  <div className="flex flex-col md:flex-row items-start md:items-center gap-6 justify-between">
+                    <div className="flex items-start gap-4">
+                      {/* Large Frame Thumbnail */}
+                      <div className="relative aspect-video w-36 md:w-44 rounded-xl overflow-hidden shrink-0 bg-black border border-border shadow-md">
+                        <img
+                          src={`${API_URL}/commits/${timeline.commit_id}/thumbnail`}
+                          alt="Commit Frame"
+                          className="w-full h-full object-cover"
+                        />
                       </div>
-                      <h2 className="text-2xl font-bold text-foreground tracking-tight">
-                        {timeline.message}
-                      </h2>
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-muted-foreground pt-1">
-                        <span>
-                          Author: <strong className="text-foreground">{timeline.author}</strong>
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Date: <strong className="text-foreground">{timeline.timestamp}</strong>
-                        </span>
+
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge
+                            variant={timeline.is_head ? 'default' : 'secondary'}
+                            className="font-mono font-bold"
+                          >
+                            {timeline.is_head ? 'ACTIVE HEAD' : 'DETACHED PREVIEW'}
+                          </Badge>
+                          <Badge variant="outline" className="font-mono">
+                            <IconClock className="size-3 text-muted-foreground" />
+                            {timeline.total_duration.toFixed(1)}s
+                          </Badge>
+                        </div>
+                        <h2 className="text-2xl font-bold text-foreground tracking-tight">
+                          {timeline.message}
+                        </h2>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-muted-foreground pt-1">
+                          <span>
+                            Author: <strong className="text-foreground">{timeline.author}</strong>
+                          </span>
+                          <span>•</span>
+                          <span>
+                            Date: <strong className="text-foreground">{timeline.timestamp}</strong>
+                          </span>
+                        </div>
                       </div>
                     </div>
 
@@ -368,6 +565,96 @@ export default function HistoryPanel({ initialCommits }: HistoryPanelProps) {
                         >
                           <IconArrowBackUp data-icon="inline-start" />
                           One-Click Revert (Make HEAD)
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Tags Management Strip */}
+                  <div className="mt-4 pt-4 border-t border-border flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-mono text-muted-foreground flex items-center gap-1">
+                        <IconTag className="size-3.5" /> Tags:
+                      </span>
+                      {selectedCommit?.tags && selectedCommit.tags.length > 0 ? (
+                        selectedCommit.tags.map((tag) => (
+                          <Badge
+                            key={tag}
+                            variant="secondary"
+                            className="font-mono text-xs gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
+                          >
+                            {tag}
+                            <button
+                              onClick={() => handleRemoveTag(timeline.commit_id, tag)}
+                              className="text-amber-400 hover:text-red-400 font-bold ml-1"
+                              title="Remove Tag"
+                            >
+                              ✕
+                            </button>
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="text-xs font-mono text-muted-foreground/60 italic">
+                          No tags assigned
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Quick Add Tag / Input */}
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleAddTag(timeline.commit_id, 'Picture Lock')}
+                        className="font-mono text-[10px]"
+                      >
+                        + Picture Lock
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleAddTag(timeline.commit_id, "Director's Cut")}
+                        className="font-mono text-[10px]"
+                      >
+                        + Director's Cut
+                      </Button>
+
+                      {showAddTagForId === timeline.commit_id ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            placeholder="Custom tag..."
+                            value={newTagInput}
+                            onChange={(e) => setNewTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleAddTag(timeline.commit_id, newTagInput);
+                              }
+                            }}
+                            className="h-6 w-28 text-xs font-mono px-2"
+                          />
+                          <Button
+                            variant="default"
+                            size="xs"
+                            onClick={() => handleAddTag(timeline.commit_id, newTagInput)}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => setShowAddTagForId(null)}
+                          >
+                            ✕
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setShowAddTagForId(timeline.commit_id)}
+                          className="font-mono text-[10px]"
+                        >
+                          <IconPlus className="size-3" /> Custom Tag
                         </Button>
                       )}
                     </div>
