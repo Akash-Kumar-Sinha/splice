@@ -5,7 +5,8 @@ import { IconTimeline, IconHistory, IconSparkles, IconDatabase } from '@tabler/i
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import HistoryPanel, { Commit, Timeline } from './HistoryPanel';
+import HistoryPanel from './HistoryPanel';
+import { Commit, Timeline } from '@/lib/types';
 import TimelineEditor from './TimelineEditor';
 import SyncStatusPill from './SyncStatusPill';
 import StorageCleanupModal from './StorageCleanupModal';

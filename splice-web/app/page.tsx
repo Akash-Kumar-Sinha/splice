@@ -1,5 +1,5 @@
 import AppWorkspace from '@/components/AppWorkspace';
-import { Commit } from '@/components/HistoryPanel';
+import { Commit } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
