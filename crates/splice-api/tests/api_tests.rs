@@ -481,3 +481,105 @@ async fn test_api_save_as_new_version_and_tree_endpoint() {
     assert_eq!(tree[0].children.len(), 1);
     assert_eq!(tree[0].children[0].commit.id, new_branch_id);
 }
+
+#[tokio::test]
+async fn test_api_sync_status_trigger_and_offline() {
+    let dir = tempdir().expect("tempdir");
+    let media_store = Arc::new(FsMediaStore::init(dir.path().join("media")).expect("media store"));
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let commit_store = Arc::new(SqliteCommitStore::open_in_memory().expect("open memory db"));
+
+    let mem_store = Arc::new(object_store::memory::InMemory::new());
+    let remote_store = Arc::new(splice_sync::S3RemoteStore::new(mem_store));
+    let sync_engine =
+        splice_sync::SyncEngine::new(remote_store, commit_store.clone(), "s3://test-bucket");
+
+    let app = splice_api::router_with_sync(
+        commit_store,
+        media_store,
+        thumb_cache,
+        thumbnailer,
+        sync_engine,
+    );
+
+    // 1. Initial status -> Synced
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sync/status")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let status: splice_sync::SyncStatusReport = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status.state, splice_sync::SyncState::Synced);
+    assert_eq!(status.pending_count, 0);
+
+    // 2. Set offline
+    let off_req = Request::builder()
+        .method("POST")
+        .uri("/sync/offline")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&splice_api::OfflineToggleRequest { offline: true }).unwrap(),
+        ))
+        .unwrap();
+    let off_res = app.clone().oneshot(off_req).await.unwrap();
+    assert_eq!(off_res.status(), StatusCode::OK);
+
+    // 3. Create a commit while offline -> Outbox queue receives it
+    let commit_req = Request::builder()
+        .method("POST")
+        .uri("/commits")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&NewCommitRequest {
+                parent: None,
+                author: "editor".to_string(),
+                message: "Offline change".to_string(),
+                timeline_hash: MediaHash::compute(b"offline_tl"),
+                media_refs: vec![],
+                timeline_raw: None,
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let commit_res = app.clone().oneshot(commit_req).await.unwrap();
+    assert_eq!(commit_res.status(), StatusCode::CREATED);
+
+    // 4. Status should show Offline with 1 pending commit
+    let req2 = Request::builder()
+        .method("GET")
+        .uri("/sync/status")
+        .body(Body::empty())
+        .unwrap();
+    let res2 = app.clone().oneshot(req2).await.unwrap();
+    let body2 = to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+    let status2: splice_sync::SyncStatusReport = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(status2.state, splice_sync::SyncState::Offline);
+    assert_eq!(status2.pending_count, 1);
+
+    // 5. Back online and trigger sync
+    let on_req = Request::builder()
+        .method("POST")
+        .uri("/sync/offline")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&splice_api::OfflineToggleRequest { offline: false }).unwrap(),
+        ))
+        .unwrap();
+    let _ = app.clone().oneshot(on_req).await.unwrap();
+
+    let trig_req = Request::builder()
+        .method("POST")
+        .uri("/sync/trigger")
+        .body(Body::empty())
+        .unwrap();
+    let trig_res = app.clone().oneshot(trig_req).await.unwrap();
+    assert_eq!(trig_res.status(), StatusCode::OK);
+    let trig_body = to_bytes(trig_res.into_body(), usize::MAX).await.unwrap();
+    let trig_data: splice_api::SyncTriggerResponse = serde_json::from_slice(&trig_body).unwrap();
+    assert_eq!(trig_data.drained_count, 1);
+    assert_eq!(trig_data.status.state, splice_sync::SyncState::Synced);
+}

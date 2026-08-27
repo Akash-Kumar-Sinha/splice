@@ -2,10 +2,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use splice_api::router;
+use splice_api::router_with_sync;
 use splice_commit::SqliteCommitStore;
 use splice_media::FsMediaStore;
 use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
+use splice_sync::{S3RemoteStore, SyncEngine};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +32,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let commit_store = Arc::new(commit_store);
     let media_store = Arc::new(media_store);
 
-    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
+    let remote_target = std::env::var("SPLICE_REMOTE_TARGET")
+        .unwrap_or_else(|_| "s3://splice-cloud-backups".to_string());
+    let memory_obj_store = Arc::new(object_store::memory::InMemory::new());
+    let remote_store = Arc::new(S3RemoteStore::new(memory_obj_store));
+    let sync_engine = SyncEngine::new(remote_store, commit_store.clone(), &remote_target);
+
+    let app = router_with_sync(
+        commit_store,
+        media_store,
+        thumb_cache,
+        thumbnailer,
+        sync_engine,
+    );
 
     let port: u16 = std::env::var("PORT")
         .ok()

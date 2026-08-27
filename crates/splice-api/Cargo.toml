@@ -9,7 +9,10 @@ splice-commit.workspace = true
 splice-diff.workspace = true
 splice-media.workspace = true
 splice-render.workspace = true
+splice-sync.workspace = true
+object_store.workspace = true
 axum.workspace = true
+
 
 
 tokio.workspace = true

@@ -59,3 +59,11 @@ async fn test_async_thumbnail_worker_queue() {
     let thumb = cache.get("commit-async-test").expect("thumbnail");
     assert!(!thumb.is_empty());
 }
+
+#[test]
+fn test_render_export_empty_fails() {
+    let dir = tempdir().expect("tempdir");
+    let out = dir.path().join("out.mp4");
+    let res = splice_render::render_export_mp4(&[], &out);
+    assert!(res.is_err());
+}

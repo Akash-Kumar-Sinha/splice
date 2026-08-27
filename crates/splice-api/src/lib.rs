@@ -20,6 +20,8 @@ use splice_media::{MediaHash, MediaStore};
 use splice_render::{
     FfmpegThumbnailer, FsThumbnailCache, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
 };
+use splice_sync::{S3RemoteStore, SyncEngine, SyncError, SyncStatusReport};
+
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
 use tower::ServiceExt;
@@ -38,6 +40,7 @@ pub struct AppState {
     pub thumbnail_cache: FsThumbnailCache,
     pub thumbnail_generator: Arc<dyn ThumbnailGenerator>,
     pub thumbnail_queue: ThumbnailQueue,
+    pub sync_engine: Arc<SyncEngine>,
 }
 
 impl AppState {
@@ -46,6 +49,30 @@ impl AppState {
         media_store: Arc<dyn MediaStore>,
         thumbnail_cache: FsThumbnailCache,
         thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+    ) -> Self {
+        let mem_store = Arc::new(object_store::memory::InMemory::new());
+        let remote_store = Arc::new(S3RemoteStore::new(mem_store));
+        let sync_engine = SyncEngine::new(
+            remote_store,
+            commit_store.clone(),
+            "s3://splice-cloud-backups",
+        );
+
+        Self::new_with_sync(
+            commit_store,
+            media_store,
+            thumbnail_cache,
+            thumbnail_generator,
+            sync_engine,
+        )
+    }
+
+    pub fn new_with_sync(
+        commit_store: Arc<dyn CommitStore>,
+        media_store: Arc<dyn MediaStore>,
+        thumbnail_cache: FsThumbnailCache,
+        thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+        sync_engine: Arc<SyncEngine>,
     ) -> Self {
         let thumbnail_queue =
             ThumbnailQueue::new(thumbnail_cache.clone(), thumbnail_generator.clone(), 64);
@@ -56,6 +83,7 @@ impl AppState {
             thumbnail_cache,
             thumbnail_generator,
             thumbnail_queue,
+            sync_engine,
         }
     }
 }
@@ -135,6 +163,18 @@ pub struct TagRequest {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfflineToggleRequest {
+    pub offline: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTriggerResponse {
+    pub success: bool,
+    pub drained_count: usize,
+    pub status: SyncStatusReport,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ApiError {
     #[error("Commit store error: {0}")]
@@ -151,6 +191,9 @@ pub enum ApiError {
 
     #[error("Thumbnail error: {0}")]
     Thumbnail(#[from] splice_render::ThumbError),
+
+    #[error("Sync error: {0}")]
+    Sync(#[from] SyncError),
 }
 
 impl IntoResponse for ApiError {
@@ -167,6 +210,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
             }
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::Sync(SyncError::Network(msg)) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 
@@ -202,7 +246,9 @@ pub fn probe_duration(path: &Path) -> f64 {
 pub async fn list_commits(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CommitResponse>>, ApiError> {
-    let commits = state.commit_store.chain_from_head()?;
+    // INFO: List all commits across all branches and root trees, sorted newest first
+    let mut commits = state.commit_store.list_all_commits()?;
+    commits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     let mut responses = Vec::with_capacity(commits.len());
 
     for c in commits {
@@ -222,6 +268,7 @@ pub async fn list_commits(
     Ok(Json(responses))
 }
 
+
 pub async fn create_commit(
     State(state): State<AppState>,
     Json(req): Json<NewCommitRequest>,
@@ -237,6 +284,7 @@ pub async fn create_commit(
         req.media_refs.clone(),
     );
 
+    // CRITICAL: Outbox pattern: write locally first, then queue for async cloud delivery
     let id = state.commit_store.append(commit)?;
 
     if let Some(timeline_raw) = req.timeline_raw {
@@ -244,6 +292,9 @@ pub async fn create_commit(
             .commit_store
             .save_timeline(&id, &timeline_raw.to_string());
     }
+
+    // INFO: Enqueue into background sync engine without blocking caller
+    state.sync_engine.enqueue(id).await;
 
     // CRITICAL: Submit asynchronous background job to generate frame thumbnail without blocking save path
     if let Some(media_path) = req
@@ -300,6 +351,9 @@ pub async fn save_as_new_version(
     } else if let Ok(Some(parent_tl_json)) = state.commit_store.get_timeline(&req.from) {
         let _ = state.commit_store.save_timeline(&id, &parent_tl_json);
     }
+
+    // INFO: Enqueue branched commit into sync engine
+    state.sync_engine.enqueue(id).await;
 
     if let Some(media_path) = media_refs
         .first()
@@ -398,6 +452,7 @@ pub async fn revert(
                 .commit_store
                 .save_timeline(&stash_id, &timeline_raw.to_string());
         }
+        state.sync_engine.enqueue(stash_id).await;
     }
 
     let target_commit = state.commit_store.get(&id)?;
@@ -575,6 +630,136 @@ pub async fn list_all_tags(State(state): State<AppState>) -> Result<Json<Vec<Tag
     Ok(Json(tags))
 }
 
+pub async fn get_sync_status(State(state): State<AppState>) -> Json<SyncStatusReport> {
+    Json(state.sync_engine.status().await)
+}
+
+pub async fn trigger_sync(
+    State(state): State<AppState>,
+) -> Result<Json<SyncTriggerResponse>, ApiError> {
+    let count = state.sync_engine.trigger_sync_now().await?;
+    let status = state.sync_engine.status().await;
+    Ok(Json(SyncTriggerResponse {
+        success: true,
+        drained_count: count,
+        status,
+    }))
+}
+
+pub async fn toggle_offline(
+    State(state): State<AppState>,
+    Json(req): Json<OfflineToggleRequest>,
+) -> Json<SyncStatusReport> {
+    state.sync_engine.set_offline(req.offline);
+    Json(state.sync_engine.status().await)
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExportRequest {
+    #[serde(default)]
+    pub commit_id: Option<CommitId>,
+    #[serde(default)]
+    pub timeline_raw: Option<serde_json::Value>,
+}
+
+pub async fn export_video(
+    State(state): State<AppState>,
+    Json(req): Json<ExportRequest>,
+) -> Result<Response, ApiError> {
+    let mut export_clips = Vec::new();
+
+    if let Some(raw_val) = req.timeline_raw {
+        if let Ok(raw_state) = serde_json::from_value::<timeline::RawEditorState>(raw_val) {
+            for track in raw_state.tracks {
+                for clip in track.clips {
+                    if let Some(media_path) = clip
+                        .media
+                        .parse::<MediaHash>()
+                        .ok()
+                        .and_then(|h| state.media_store.resolve(&h))
+                    {
+                        export_clips.push(splice_render::ExportClip {
+                            media_path,
+                            in_point: clip.in_point,
+                            out_point: clip.out_point,
+                        });
+                    }
+                }
+            }
+        }
+    } else if let Some(id) = req.commit_id {
+        let commit = state.commit_store.get(&id)?;
+        if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
+            if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
+                for track in raw_state.tracks {
+                    for clip in track.clips {
+                        if let Some(media_path) = clip
+                            .media
+                            .parse::<MediaHash>()
+                            .ok()
+                            .and_then(|h| state.media_store.resolve(&h))
+                        {
+                            export_clips.push(splice_render::ExportClip {
+                                media_path,
+                                in_point: clip.in_point,
+                                out_point: clip.out_point,
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            for hash in &commit.media_refs {
+                if let Some(media_path) = state.media_store.resolve(hash) {
+                    let dur = probe_duration(&media_path);
+                    export_clips.push(splice_render::ExportClip {
+                        media_path,
+                        in_point: 0.0,
+                        out_point: dur,
+                    });
+                }
+            }
+        }
+    }
+
+    if export_clips.is_empty() {
+        return Err(ApiError::BadRequest(
+            "No valid video clips found to render and export".to_string(),
+        ));
+    }
+
+    let temp_file = tempfile::Builder::new()
+        .suffix(".mp4")
+        .tempfile()
+        .map_err(|e| ApiError::Store(StoreError::Io(e)))?;
+    splice_render::render_export_mp4(&export_clips, temp_file.path())?;
+
+    let bytes = std::fs::read(temp_file.path()).map_err(|e| ApiError::Store(StoreError::Io(e)))?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"splice_export.mp4\""),
+    );
+
+    Ok((headers, bytes).into_response())
+}
+
+pub async fn export_commit_video(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<CommitId>,
+) -> Result<Response, ApiError> {
+    export_video(
+        State(state),
+        Json(ExportRequest {
+            commit_id: Some(id),
+            timeline_raw: None,
+        }),
+    )
+    .await
+}
+
 pub fn router(
     commit_store: Arc<dyn CommitStore>,
     media_store: Arc<dyn MediaStore>,
@@ -587,7 +772,27 @@ pub fn router(
         thumbnail_cache,
         thumbnail_generator,
     );
+    router_with_state(state)
+}
 
+pub fn router_with_sync(
+    commit_store: Arc<dyn CommitStore>,
+    media_store: Arc<dyn MediaStore>,
+    thumbnail_cache: FsThumbnailCache,
+    thumbnail_generator: Arc<dyn ThumbnailGenerator>,
+    sync_engine: Arc<SyncEngine>,
+) -> Router {
+    let state = AppState::new_with_sync(
+        commit_store,
+        media_store,
+        thumbnail_cache,
+        thumbnail_generator,
+        sync_engine,
+    );
+    router_with_state(state)
+}
+
+pub fn router_with_state(state: AppState) -> Router {
     let cors = CorsLayer::permissive();
 
     Router::new()
@@ -600,9 +805,14 @@ pub fn router(
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
         .route("/commits/:id/tags", post(add_commit_tag))
         .route("/commits/:id/tags/:label", delete(remove_commit_tag))
+        .route("/commits/:id/export", get(export_commit_video))
+        .route("/export", post(export_video))
         .route("/tags", get(list_all_tags))
         .route("/media", post(upload_media))
         .route("/media/:hash", get(serve_media))
+        .route("/sync/status", get(get_sync_status))
+        .route("/sync/trigger", post(trigger_sync))
+        .route("/sync/offline", post(toggle_offline))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024))
         .layer(cors)
         .with_state(state)
