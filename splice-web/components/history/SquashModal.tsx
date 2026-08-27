@@ -50,11 +50,11 @@ export default function SquashModal({
         </div>
 
         <div className="bg-background/80 border border-border rounded-xl p-3 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
-          <div className="text-[10px] font-mono text-muted-foreground uppercase font-bold">
+          <div className="text-[10px] text-muted-foreground uppercase font-bold">
             Versions to be collapsed ({selectedIds.length}):
           </div>
           {selectedCommits.map((c, idx) => (
-            <div key={c.id} className="text-xs font-mono flex items-center gap-2 text-foreground">
+            <div key={c.id} className="text-xs flex items-center gap-2 text-foreground">
               <span className="text-primary font-bold">{idx + 1}.</span>
               <span className="truncate flex-1">{c.message}</span>
               <span className="text-[10px] text-muted-foreground shrink-0">{c.id.slice(0, 7)}</span>
@@ -71,7 +71,7 @@ export default function SquashModal({
             value={squashMessage}
             onChange={(e) => onMessageChange(e.target.value)}
             placeholder="Describe the combined changes in this squashed version..."
-            className="w-full bg-background border border-border rounded-xl p-3 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+            className="w-full bg-background border border-border rounded-xl p-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
           />
         </div>
 

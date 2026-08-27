@@ -67,7 +67,7 @@ export function PlayPauseButton({
       {showLabel && (
         <span
           onClick={handleClick}
-          className="text-xs font-mono font-medium cursor-pointer select-none"
+          className="text-xs font-medium cursor-pointer select-none"
         >
           {currentLabel}
         </span>

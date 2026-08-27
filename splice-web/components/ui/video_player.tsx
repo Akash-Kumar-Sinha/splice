@@ -1,4 +1,3 @@
-
 "use client"
 
 import {
@@ -24,9 +23,8 @@ const variables = {
   "--media-background-color": "var(--background)",
   "--media-control-hover-background": "var(--accent)",
   "--media-font-family": "var(--font-sans)",
-  "--media-live-button-icon-color": "var(--muted-foreground)",
-  "--media-live-button-indicator-color": "var(--destructive)",
   "--media-range-track-background": "var(--border)",
+  "--media-icon-color": "var(--foreground)",
 } as CSSProperties
 
 export const VideoPlayer = ({ className, style, ...props }: VideoPlayerProps) => (

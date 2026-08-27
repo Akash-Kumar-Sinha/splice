@@ -15,7 +15,7 @@ export function SkipBackwardButton({
   onSeekStart,
   title = 'Jump to Start',
   disabled = false,
-  seekOffset,
+  seekOffset = 5,
 }: SkipBackwardButtonProps) {
   const instanceId = useId().replace(/:/g, '-');
   const btnRef = useRef<MediaSeekBackwardButtonElement | null>(null);

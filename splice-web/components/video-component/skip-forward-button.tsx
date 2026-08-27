@@ -15,7 +15,7 @@ export function SkipForwardButton({
   onSeekEnd,
   title = 'Jump to End',
   disabled = false,
-  seekOffset,
+  seekOffset = 5,
 }: SkipForwardButtonProps) {
   const instanceId = useId().replace(/:/g, '-');
   const btnRef = useRef<MediaSeekForwardButtonElement | null>(null);

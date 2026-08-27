@@ -83,14 +83,14 @@ export function VolumeRange({
         ref={rangeRef}
         onInput={handleSeekVolume}
         onChange={handleSeekVolume}
-        mediaController={`none-${instanceId}`}
+        {...{mediaController: `none-${instanceId}`} as React.ComponentProps<typeof MediaVolumeRange>}
         mediaVolume={effectiveVolume}
         mediaMuted={isMuted}
         className="w-20 cursor-pointer bg-transparent hover:bg-zinc-900 transition-colors"
       />
 
       {showPercentage && (
-        <span className="text-[10px] font-mono text-muted-foreground tabular-nums">
+        <span className="text-[10px] text-muted-foreground tabular-nums">
           {Math.round(effectiveVolume * 100)}%
         </span>
       )}

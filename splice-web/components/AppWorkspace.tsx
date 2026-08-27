@@ -51,7 +51,7 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
             <IconSparkles className="size-4 text-primary" /> Splice Studio
           </span>
           <Separator orientation="vertical" className="h-4" />
-          <Badge variant="outline" className="text-[10px] font-mono">
+          <Badge variant="outline" className="text-[10px]">
             v0.1.0
           </Badge>
         </div>
@@ -95,7 +95,7 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
           <Separator orientation="vertical" className="h-4" />
           <div className="text-xs text-muted-foreground flex items-center gap-1.5">
             <span>Active Cut:</span>
-            <Badge variant="outline" className="font-mono text-primary font-bold">
+            <Badge variant="outline" className="text-primary font-bold">
               {headCommitId ? `${headCommitId.slice(0, 8)}...` : 'None'}
             </Badge>
           </div>

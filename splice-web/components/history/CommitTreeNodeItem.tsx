@@ -3,7 +3,6 @@
 import React from 'react';
 import {
   IconGitBranch,
-  IconTag,
   IconStar,
   IconStarFilled,
   IconChevronDown,
@@ -11,29 +10,22 @@ import {
   IconSquare,
   IconSquareCheckFilled,
 } from '@tabler/icons-react';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  VideoPlayer,
-  VideoPlayerControlBar,
-  VideoPlayerPlayButton,
-  VideoPlayerTimeRange,
-  VideoPlayerTimeDisplay,
-  VideoPlayerMuteButton,
-  VideoPlayerVolumeRange,
-} from '@/components/ui/video_player';
 import { CommitTreeNode } from '@/lib/types';
 import { API_URL } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { Commit } from '@/lib/types';
 
+const INDENT = 22;
+
 interface CommitTreeNodeItemProps {
   node: CommitTreeNode;
-  parentId: string | null;
+  depth: number;
+  isLast: boolean;
+  parentLines: boolean[];
   selectedCommitId: string | null;
   activeHeadId: string | null;
   selectedForSquash: string[];
-  hoveredNodeId: string | null;
   collapsedNodeIds: Set<string>;
   isDiffMode: boolean;
   diffBaseId: string | null;
@@ -48,11 +40,12 @@ interface CommitTreeNodeItemProps {
 
 export default function CommitTreeNodeItem({
   node,
-  parentId,
+  depth,
+  isLast,
+  parentLines,
   selectedCommitId,
   activeHeadId,
   selectedForSquash,
-  hoveredNodeId,
   collapsedNodeIds,
   isDiffMode,
   diffBaseId,
@@ -75,244 +68,176 @@ export default function CommitTreeNodeItem({
     node.tags?.includes("Director's Cut") ||
     node.tags?.includes('Starred');
 
-  const isLineHighlighted =
-    hoveredNodeId === commit.id ||
-    (parentId !== null && hoveredNodeId === parentId) ||
-    isSelected ||
-    (parentId !== null && selectedCommitId === parentId);
-
-  const isParentHighlighted =
-    isSelected ||
-    hoveredNodeId === commit.id ||
-    (hasChildren &&
-      node.children.some(
-        (c) =>
-          c.commit.id === hoveredNodeId ||
-          c.commit.id === selectedCommitId
-      ));
-
   return (
-    <div key={node.commit.id} className="flex flex-col w-full relative">
+    <div className="flex flex-col">
       <div
+        className={cn(
+          "flex items-center gap-0 py-[3px] pr-1 rounded cursor-pointer transition-colors group/node min-w-0",
+          isSelected && !isDiffMode
+            ? "bg-primary/10"
+            : "hover:bg-muted/30",
+          isDiffMode && diffBaseId === commit.id && "bg-amber-500/10",
+          isDiffMode && diffTargetId === commit.id && "bg-primary/10",
+        )}
+        onClick={() => {
+          if (isDiffMode) {
+            onSetDiffBaseId(commit.id);
+          } else {
+            onSelect(commit.id);
+          }
+        }}
         onMouseEnter={() => onHover(node.commit.id)}
         onMouseLeave={() => onHover(null)}
-        className="flex items-center gap-1.5 w-full py-0.5 relative z-10"
       >
-        {parentId !== null && (
-          <div className="absolute -left-3.5 -top-1 bottom-0 w-3.5 pointer-events-none z-0">
-            <div
-              className={cn(
-                'absolute left-0 top-0 h-[calc(50%+4px)] w-px transition-colors duration-150',
-                isLineHighlighted
-                  ? 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
-                  : 'bg-border/30'
-              )}
-            />
-            <div
-              className={cn(
-                'absolute left-0 top-[calc(50%+3px)] w-3 h-px transition-colors duration-150',
-                isLineHighlighted
-                  ? 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
-                  : 'bg-border/30'
-              )}
-            />
-            <div
-              className={cn(
-                'absolute right-0 top-[calc(50%+1.5px)] size-1 border-t border-r rotate-45 transition-colors duration-150',
-                isLineHighlighted
-                  ? 'border-primary shadow-[0_0_8px_rgba(var(--primary),0.8)]'
-                  : 'border-border/40'
-              )}
-            />
+        {/* Indentation with tree lines */}
+        <div className="flex shrink-0" style={{ width: depth * INDENT }}>
+          {Array.from({ length: depth }).map((_, i) => {
+            const showLine = parentLines[i];
+            return (
+              <div key={i} className="relative" style={{ width: INDENT }}>
+                {showLine && (
+                  <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/90" />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* This node's connector: horizontal line + vertical stub */}
+        {depth > 0 && (
+          <div className="relative shrink-0" style={{ width: 14 }}>
+            {/* Horizontal line from vertical trunk to node */}
+            <div className="absolute top-[11px] left-0 w-2.5 h-px bg-border/90" />
+            {/* Vertical line extending down (for non-last children) */}
+            {!isLast && (
+              <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/90" />
+            )}
+            {/* Vertical line from parent (top half, connecting to parent's horizontal) */}
+            <div className="absolute left-[10px] top-0 h-[11px] w-px bg-border/90" />
           </div>
         )}
 
+        {/* Collapse toggle or dot */}
         {hasChildren ? (
-          <Button
-            variant="ghost"
-            size="icon-xs"
+          <button
             onClick={(e) => onToggleCollapse(node.commit.id, e)}
             className={cn(
-              'size-5 shrink-0 rounded-md transition-all',
-              isParentHighlighted
-                ? 'text-primary bg-primary/20 ring-1 ring-primary/40'
-                : isCollapsed
-                ? 'text-muted-foreground hover:text-foreground hover:bg-muted/80'
-                : 'text-primary/70 hover:bg-primary/15'
+              "size-4 shrink-0 rounded flex items-center justify-center transition-colors ml-0.5",
+              isCollapsed
+                ? "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                : "text-primary/60 hover:bg-primary/10"
             )}
-            title={isCollapsed ? 'Expand branches' : 'Collapse branches'}
           >
             {isCollapsed ? (
-              <IconChevronRight className="size-3.5" />
+              <IconChevronDown className="size-2.5" />
             ) : (
-              <IconChevronDown className="size-3.5" />
+              <IconChevronRight className="size-2.5" />
             )}
-          </Button>
+          </button>
         ) : (
-          <div className="size-5 shrink-0" />
+          <div className="w-4 flex items-center justify-center shrink-0 ml-0.5">
+            <div className={cn(
+              "size-1.5 rounded-full transition-colors",
+              isSelected ? "bg-primary" : "bg-border/40 group-hover/node:bg-border/60"
+            )} />
+          </div>
         )}
 
-        <div
-          onClick={() => {
-            if (isDiffMode) {
-              onSetDiffBaseId(commit.id);
-            } else {
-              onSelect(commit.id);
-            }
-          }}
-          className={cn(
-            'flex-1 min-w-0 text-left rounded-xl p-2.5 transition-all duration-150 border flex flex-col gap-1.5 cursor-pointer relative',
-            isSelected && !isDiffMode
-              ? 'bg-card border-primary ring-1 ring-primary/40 shadow-lg shadow-primary/10 brightness-110'
-              : 'bg-card/30 border-border/40 hover:bg-card/90 hover:border-primary/60 hover:brightness-110 hover:shadow-md hover:shadow-primary/5',
-            isSelectedForSquash && 'ring-1 ring-primary/80 border-primary/60 bg-primary/10',
-            isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
-            isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
+        {/* Tiny thumbnail */}
+        <div className="relative size-6 rounded shrink-0 overflow-hidden bg-black/40 ml-1">
+          <img
+            src={`${API_URL}/commits/${commit.id}/thumbnail`}
+            alt=""
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLElement).style.display = 'none';
+            }}
+          />
+        </div>
+
+        {/* Name + badges */}
+        <div className="flex-1 min-w-0 flex items-center gap-1 ml-1.5">
+          <span className={cn(
+            "text-[11px] truncate leading-tight",
+            isSelected ? "text-foreground font-medium" : "text-foreground/80",
+            isHead && "font-semibold"
+          )}>
+            {commit.message}
+          </span>
+
+          {isHead && (
+            <Badge variant="default" className="text-[7px] px-1 py-0 h-3 shrink-0 leading-none">
+              HEAD
+            </Badge>
           )}
-        >
-          <div className="flex gap-2 items-center">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={(e) => onToggleSelectForSquash(commit.id, e)}
-              className={cn(
-                'size-5 shrink-0 rounded transition-all',
-                isSelectedForSquash
-                  ? 'text-primary bg-primary/15'
-                  : 'text-muted-foreground/40 hover:text-muted-foreground'
-              )}
-              title={isSelectedForSquash ? 'Deselect from squash' : 'Select to squash'}
-            >
-              {isSelectedForSquash ? (
-                <IconSquareCheckFilled className="size-3.5 text-primary" />
-              ) : (
-                <IconSquare className="size-3.5" />
-              )}
-            </Button>
-
-            <div className="relative size-9 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
-              <img
-                src={`${API_URL}/commits/${commit.id}/thumbnail`}
-                alt="Thumbnail"
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
-                }}
-              />
-            </div>
-
-            <div className="flex-1 min-w-0 flex flex-col">
-              <div className="flex items-center justify-between gap-1">
-                <div className="flex items-center gap-1 flex-wrap">
-                  {isHead && (
-                    <Badge variant="default" className="text-[9px] px-1 py-0">
-                      ACTIVE VERSION
-                    </Badge>
-                  )}
-                  {node.depth === 0 ? (
-                    <Badge
-                      variant="outline"
-                      className="text-[8px] px-1 py-0 bg-emerald-500/10 text-emerald-400 border-emerald-500/30 font-semibold"
-                    >
-                      ROOT PROJECT
-                    </Badge>
-                  ) : (
-                    <Badge
-                      variant="secondary"
-                      className="text-[8px] px-1 py-0 bg-primary/10 text-primary border-primary/30"
-                    >
-                      <IconGitBranch className="size-2.5 mr-0.5" /> Branch #{node.depth}
-                    </Badge>
-                  )}
-                </div>
-
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleStar(commit);
-                  }}
-                  title={hasStarTag ? 'Remove Star Tag' : 'Star (Picture Lock) & Proxy Render'}
-                  className="size-5 hover:text-amber-400"
-                >
-                  {hasStarTag ? (
-                    <IconStarFilled className="size-3.5 text-amber-400" />
-                  ) : (
-                    <IconStar className="size-3.5 text-muted-foreground" />
-                  )}
-                </Button>
-              </div>
-
-              <div className="font-semibold text-xs text-foreground truncate mt-0.5">
-                {commit.message}
-              </div>
-            </div>
-          </div>
-
-          {node.tags && node.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {node.tags.map((tag) => (
-                <Badge
-                  key={tag}
-                  variant="secondary"
-                  className="font-mono text-[8px] px-1.5 py-0 gap-0.5 bg-amber-500/20 text-amber-300 border-amber-500/40"
-                >
-                  <IconTag className="size-2" />
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {hasStarTag && (
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="mt-1.5 rounded-lg overflow-hidden border border-amber-500/30 bg-black aspect-video relative group shadow-sm"
-            >
-              <VideoPlayer className="w-full h-full rounded-lg overflow-hidden">
-                <video
-                  slot="media"
-                  src={`${API_URL}/commits/${commit.id}/preview.mp4`}
-                  className="w-full h-full object-contain"
-                  playsInline
-                  preload="metadata"
-                />
-                <VideoPlayerControlBar>
-                  <VideoPlayerPlayButton />
-                  <VideoPlayerTimeRange />
-                  <VideoPlayerTimeDisplay showDuration />
-                  <VideoPlayerMuteButton />
-                  <VideoPlayerVolumeRange />
-                </VideoPlayerControlBar>
-              </VideoPlayer>
-              <div className="absolute top-1.5 right-1.5 pointer-events-none z-10 flex items-center gap-1 bg-amber-500/90 text-black font-mono text-[8px] font-bold px-1.5 py-0.5 rounded shadow">
-                <IconStarFilled className="size-2.5" />
-                <span>INSTANT PROXY</span>
-              </div>
-            </div>
-          )}
-
-          {hasChildren && isCollapsed && (
-            <div className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono pt-0.5">
-              <IconGitBranch className="size-3 text-primary" />
-              <span>+{node.children.length} branch(es) hidden (click arrow to expand)</span>
-            </div>
+          {node.depth > 0 && (
+            <Badge variant="secondary" className="text-[7px] px-1 py-0 h-3 shrink-0 leading-none bg-primary/10 text-primary/70 border-0">
+              b{node.depth}
+            </Badge>
           )}
         </div>
+
+        {/* Star */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleStar({ ...commit, tags: node.tags || commit.tags });
+          }}
+          className={cn(
+            "size-4 shrink-0 flex items-center justify-center rounded transition-colors opacity-0 group-hover/node:opacity-100",
+            hasStarTag ? "opacity-100 text-amber-400" : "text-muted-foreground/40 hover:text-amber-400"
+          )}
+        >
+          {hasStarTag ? (
+            <IconStarFilled className="size-2.5" />
+          ) : (
+            <IconStar className="size-2.5" />
+          )}
+        </button>
+
+        {/* Squash checkbox */}
+        <button
+          onClick={(e) => onToggleSelectForSquash(commit.id, e)}
+          className={cn(
+            "size-4 shrink-0 flex items-center justify-center rounded transition-colors opacity-0 group-hover/node:opacity-100",
+            isSelectedForSquash ? "opacity-100 text-primary" : "text-muted-foreground/30 hover:text-muted-foreground"
+          )}
+        >
+          {isSelectedForSquash ? (
+            <IconSquareCheckFilled className="size-2.5" />
+          ) : (
+            <IconSquare className="size-2.5" />
+          )}
+        </button>
       </div>
 
+      {/* Tags */}
+      {node.tags && node.tags.length > 0 && (
+        <div className="flex items-center gap-1" style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}>
+          {node.tags.map((tag) => (
+            <span
+              key={tag}
+              className="text-[7px] px-1 py-px rounded bg-amber-500/15 text-amber-300/70 leading-none"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Children */}
       {hasChildren && !isCollapsed && (
-        <div className="relative ml-2.5 pl-3.5 flex flex-col gap-1.5 pt-1">
-          {node.children.map((child) => (
+        <div className="flex flex-col">
+          {node.children.map((child, idx) => (
             <CommitTreeNodeItem
               key={child.commit.id}
               node={child}
-              parentId={node.commit.id}
+              depth={depth + 1}
+              isLast={idx === node.children.length - 1}
+              parentLines={[...parentLines, !isLast]}
               selectedCommitId={selectedCommitId}
               activeHeadId={activeHeadId}
               selectedForSquash={selectedForSquash}
-              hoveredNodeId={hoveredNodeId}
               collapsedNodeIds={collapsedNodeIds}
               isDiffMode={isDiffMode}
               diffBaseId={diffBaseId}
@@ -325,6 +250,17 @@ export default function CommitTreeNodeItem({
               onSetDiffBaseId={onSetDiffBaseId}
             />
           ))}
+        </div>
+      )}
+
+      {/* Collapsed indicator */}
+      {hasChildren && isCollapsed && (
+        <div
+          className="flex items-center gap-1 py-0 text-[8px] text-muted-foreground/40"
+          style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}
+        >
+          <IconGitBranch className="size-2.5 text-primary/40" />
+          <span>+{node.children.length}</span>
         </div>
       )}
     </div>

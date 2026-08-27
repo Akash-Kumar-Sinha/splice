@@ -8,7 +8,6 @@ import {
   IconAlertCircle,
   IconRefresh,
   IconServer,
-  IconClock,
   IconWifi,
   IconWifiOff,
 } from '@tabler/icons-react';
@@ -115,7 +114,7 @@ export default function SyncStatusPill() {
       <button
         onClick={() => setIsOpen(!isOpen)}
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold transition-all border shadow-sm',
+          'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all border shadow-sm',
           state === 'synced' &&
             'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25',
           state === 'pending' &&
@@ -172,14 +171,14 @@ export default function SyncStatusPill() {
             </div>
             <Badge
               variant={state === 'synced' ? 'default' : 'outline'}
-              className="text-[10px] font-mono capitalize"
+              className="text-[10px] capitalize"
             >
               {state}
             </Badge>
           </div>
 
           {/* Target & Last Sync Meta */}
-          <div className="flex flex-col gap-1.5 text-xs text-muted-foreground font-mono bg-muted/30 p-2.5 rounded-xl border border-border">
+          <div className="flex flex-col gap-1.5 text-xs text-muted-foreground bg-muted/30 p-2.5 rounded-xl border border-border">
             <div className="flex items-center justify-between">
               <span>Remote:</span>
               <span className="text-foreground font-semibold truncate max-w-[150px]">
@@ -216,7 +215,7 @@ export default function SyncStatusPill() {
               variant="default"
               onClick={handleTriggerSync}
               disabled={isTriggering || state === 'offline'}
-              className="flex-1 text-xs font-mono font-bold"
+              className="flex-1 text-xs font-bold"
             >
               {isTriggering ? (
                 <Spinner className="size-3.5 mr-1.5" />
@@ -231,7 +230,7 @@ export default function SyncStatusPill() {
               size="sm"
               variant="outline"
               onClick={handleToggleOffline}
-              className="text-xs font-mono text-muted-foreground"
+              className="text-xs text-muted-foreground"
               title="Toggle Offline Work Mode"
             >
               {state === 'offline' ? (

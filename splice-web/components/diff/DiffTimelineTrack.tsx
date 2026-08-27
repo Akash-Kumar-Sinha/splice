@@ -31,48 +31,35 @@ export default function DiffTimelineTrack({
   variant,
   diff,
 }: DiffTimelineTrackProps) {
-  const timeLabel = variant === "a" ? "timeA" : "timeB";
   const displayTime = Math.min(currentTime, duration);
 
   return (
-    <div className="flex flex-col gap-1.5 pt-1">
-      <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
-        <span
-          className={cn(
-            "font-semibold flex items-center gap-1",
-            variant === "a" ? "text-foreground" : "text-primary",
-          )}
-        >
-          <span>Timeline {label}:</span>
-          <span className="text-[10px] opacity-70">({clips.length} clips)</span>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className={cn(
+            "inline-block size-1.5 rounded-full",
+            variant === "a" ? "bg-amber-400" : "bg-primary"
+          )} />
+          {clips.length} clip{clips.length !== 1 ? "s" : ""}
         </span>
-        <span
-          className={cn(
-            "text-[10px] font-mono",
-            variant === "a" ? "" : "text-primary font-bold",
-          )}
-        >
-          {activeClipName || "Finished"}
+        <span className="truncate max-w-[120px] text-right">
+          {activeClipName || "—"}
         </span>
       </div>
 
-      <div className="relative h-10 bg-background border border-border rounded-lg p-1 flex gap-1 items-center overflow-hidden">
+      <div className="relative h-8 bg-muted/15 rounded-lg p-0.5 flex gap-0.5 items-center overflow-hidden">
         {clips.length === 0 ? (
-          <div className="w-full text-center text-[10px] font-mono text-muted-foreground">
-            Empty timeline
+          <div className="w-full text-center text-[9px] text-muted-foreground">
+            Empty
           </div>
         ) : (
           clips.map((clip, idx) => {
             const widthPct = Math.max(5, (clip.duration / duration) * 100);
             const isActive = activeClipId === clip.id;
-            const isRemoved =
-              variant === "a" &&
-              diff?.removed.some((r) => r.clip_index === idx);
-            const isAdded =
-              variant === "b" && diff?.added.some((a) => a.clip_index === idx);
-            const isMoved =
-              variant === "b" &&
-              diff?.moved.some(([m]) => m.clip_index === idx);
+            const isRemoved = variant === "a" && diff?.removed.some((r) => r.clip_index === idx);
+            const isAdded = variant === "b" && diff?.added.some((a) => a.clip_index === idx);
+            const isMoved = variant === "b" && diff?.moved.some(([m]) => m.clip_index === idx);
 
             return (
               <div
@@ -80,60 +67,40 @@ export default function DiffTimelineTrack({
                 onClick={() => onSeek(clip.start_time)}
                 style={{ width: `${widthPct}%` }}
                 className={cn(
-                  "h-full rounded-md px-1.5 py-0.5 flex flex-col justify-center text-[10px] font-mono border cursor-pointer transition-all truncate select-none",
+                  "h-full rounded-md px-1.5 flex items-center text-[9px] cursor-pointer transition-all truncate select-none",
                   isActive
                     ? variant === "a"
-                      ? "bg-primary/25 border-primary text-foreground font-bold shadow-sm ring-1 ring-primary/40"
-                      : "bg-primary/30 border-primary text-foreground font-bold shadow-sm ring-1 ring-primary"
+                      ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/30"
+                      : "bg-primary/20 text-primary-foreground ring-1 ring-primary/30"
                     : isRemoved
-                      ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
+                      ? "bg-rose-500/20 text-rose-300"
                       : isAdded
-                        ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300"
+                        ? "bg-emerald-500/20 text-emerald-300"
                         : isMoved
-                          ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
-                          : "bg-muted/40 border-border text-muted-foreground hover:bg-muted/70",
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
                 )}
-                title={`Click to jump: ${clip.name} (${clip.duration.toFixed(1)}s)`}
+                title={clip.name}
               >
-                <span className="truncate leading-tight text-[10px]">
-                  {clip.name}
-                </span>
-                <span className="text-[8px] opacity-70 leading-tight">
-                  {clip.start_time.toFixed(1)}s -{" "}
-                  {(clip.start_time + clip.duration).toFixed(1)}s
-                </span>
+                <span className="truncate">{clip.name}</span>
               </div>
             );
           })
         )}
 
-        {duration > 0 && (
+        {/* Playhead */}
+        {duration > 0 && clips.length > 0 && (
           <div
             style={{ left: `${(displayTime / duration) * 100}%` }}
             className={cn(
-              "absolute top-0 bottom-0 w-0.5 pointer-events-none z-10 transition-all duration-75",
-              variant === "a"
-                ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
-                : "bg-primary shadow-[0_0_8px_rgba(255,255,255,0.8)]",
+              "absolute top-0 bottom-0 w-px pointer-events-none z-10",
+              variant === "a" ? "bg-amber-400/80" : "bg-primary/80"
             )}
           />
         )}
       </div>
 
-      <div>
-        <TimeDisplay
-          currentTime={displayTime}
-          duration={duration}
-          showDuration={true}
-        />
-
-        <TimelineSlider
-          currentTime={displayTime}
-          duration={duration}
-          onSeek={onSeek}
-          showTimeDisplay={false}
-        />
-      </div>
+      <TimeDisplay currentTime={displayTime} duration={duration} showDuration />
     </div>
   );
 }

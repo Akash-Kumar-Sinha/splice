@@ -132,7 +132,7 @@ export default function ExportDialog({
             </div>
             <div>
               <h3 className="font-bold text-sm text-foreground">Export Full-Res Video</h3>
-              <p className="text-[11px] text-muted-foreground truncate max-w-xs font-mono">
+              <p className="text-[11px] text-muted-foreground truncate max-w-xs">
                 {commitMessage} ({commitId.slice(0, 7)})
               </p>
             </div>
@@ -217,7 +217,7 @@ export default function ExportDialog({
                       }`}
                     >
                       <span className="text-xs">{res.label}</span>
-                      <span className="text-[9px] opacity-75 font-mono">{res.desc}</span>
+                      <span className="text-[9px] opacity-75">{res.desc}</span>
                     </button>
                   ))}
                 </div>
@@ -257,7 +257,7 @@ export default function ExportDialog({
 
                 <Badge
                   variant={isCompleted ? 'default' : isFailed ? 'destructive' : 'secondary'}
-                  className="text-[10px] uppercase font-mono"
+                  className="text-[10px] uppercase"
                 >
                   {job.status}
                 </Badge>
@@ -265,7 +265,7 @@ export default function ExportDialog({
 
               <div className="flex flex-col gap-1.5">
                 <Progress value={progressPercent} className="w-full h-2 rounded-full overflow-hidden" />
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono">
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                   <span>
                     {format.toUpperCase()} • {resolution.toUpperCase()}
                   </span>
@@ -293,7 +293,7 @@ export default function ExportDialog({
               {isFailed && (
                 <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-xl text-destructive text-xs">
                   <p className="font-semibold">Error during export rendering:</p>
-                  <p className="text-[11px] mt-1 font-mono">{job.error || 'Unknown error occurred'}</p>
+                  <p className="text-[11px] mt-1">{job.error || 'Unknown error occurred'}</p>
                 </div>
               )}
             </div>

@@ -4,8 +4,6 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   IconUpload,
   IconDeviceFloppy,
-  IconMovie,
-  IconClock,
   IconSparkles,
   IconDownload,
   IconFilePlus,
@@ -18,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { API_URL, formatTimestamp } from '@/lib/api';
+import { API_URL } from '@/lib/api';
 import {
   Clip,
   EditorState,
@@ -59,7 +57,7 @@ interface TimelineEditorProps {
 }
 
 export default function TimelineEditor({
-  headCommitId,
+  headCommitId: _headCommitId,
   loadedTimeline,
   onCommitSaved,
 }: TimelineEditorProps) {
@@ -214,7 +212,7 @@ export default function TimelineEditor({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          parent: activeParentId, author: 'editor@splice.dev',
+          parent: activeParentId, author: 'aks.krsinha@gmail.com',
           message: commitMessage.trim() || 'Saved timeline edit',
           timeline_hash: timelineHash, media_refs: mediaRefs, timeline_raw: editorState,
         }),
@@ -301,49 +299,53 @@ export default function TimelineEditor({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background text-foreground font-sans overflow-hidden">
-      <div className="shrink-0 border-b border-border bg-card/60 p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <Button onClick={handleStartNewProject} size="sm" variant="outline" className="font-semibold text-xs border-dashed gap-1" title="Start fresh project">
-            <IconFilePlus className="size-3.5 text-primary" /> New Project
+      <div className="shrink-0 border-b border-border bg-card/60 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <Button onClick={handleStartNewProject} size="sm" variant="outline" className="h-8 text-xs gap-1.5" title="Start fresh project">
+            <IconFilePlus data-icon="inline-start" /> New
           </Button>
-          <Button onClick={() => document.querySelector<HTMLInputElement>('[type="file"]')?.click()} disabled={isUploading} size="sm">
-            {isUploading ? <Spinner className="size-3.5 mr-1.5" /> : <IconUpload data-icon="inline-start" />}
-            {isUploading ? 'Uploading...' : 'Import Video / Audio'}
+          <Button onClick={() => document.querySelector<HTMLInputElement>('[type="file"]')?.click()} disabled={isUploading} size="sm" className="h-8 text-xs gap-1.5">
+            {isUploading ? <Spinner className="size-3.5" /> : <IconUpload data-icon="inline-start" />}
+            {isUploading ? 'Uploading...' : 'Import'}
           </Button>
-          <Badge variant="outline" className="font-mono gap-1.5 py-1">
-            <IconMovie className="size-3 text-muted-foreground" /> Clips: {primaryTrack.clips.length}
-            <Separator orientation="vertical" className="h-3" />
-            <IconClock className="size-3 text-muted-foreground" /> Duration: {totalDuration.toFixed(2)}s
-          </Badge>
-          {activeParentId === null ? (
-            <Badge variant="outline" className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border-emerald-500/30 gap-1 py-1">
-              <IconSparkles className="size-3" /> New Root Project
+
+          <Separator orientation="vertical" className="h-5 mx-1" />
+
+          <span className="text-[11px] text-muted-foreground">
+            {primaryTrack.clips.length} clip{primaryTrack.clips.length !== 1 ? 's' : ''} · {totalDuration.toFixed(1)}s
+          </span>
+
+          {activeParentId && (
+            <Badge variant="secondary" className="text-[10px] gap-1 h-5">
+              <IconGitBranch className="size-3" />
+              <span className="truncate max-w-[100px]">{activeParentName || activeParentId.slice(0, 7)}</span>
+              <button onClick={handleUnlinkParent} className="ml-0.5 hover:text-foreground">✕</button>
             </Badge>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-muted/40 px-2 py-0.5 rounded-lg border border-border text-[10px] font-mono text-muted-foreground">
-              <IconGitBranch className="size-3 text-primary shrink-0" />
-              <span className="truncate max-w-[130px]">Branch of: {activeParentName || activeParentId.slice(0, 7)}</span>
-              <button onClick={handleUnlinkParent} className="text-muted-foreground hover:text-foreground font-bold ml-1 text-xs hover:bg-muted p-0.5 rounded">✕</button>
-            </div>
           )}
         </div>
+
         <div className="flex items-center gap-2">
-          <Button onClick={handleExportVideo} size="sm" variant="outline" disabled={isExporting || primaryTrack.clips.length === 0} className="font-mono text-xs font-semibold border-primary/40 hover:bg-primary/10 gap-1.5">
-            {isExporting ? <Spinner className="size-3.5 text-primary" /> : <IconDownload className="size-3.5 text-primary" />}
-            {isExporting ? 'Rendering...' : 'Download Video'}
+          <Input
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            placeholder="Version notes..."
+            className="w-48 h-8 text-xs"
+          />
+          <Button variant="ghost" size="sm" onClick={generateAutoNote} title="Auto-generate note" className="h-8 px-2 text-xs text-muted-foreground">
+            <IconSparkles data-icon="inline-start" />
           </Button>
-          <Input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} placeholder="Version name / notes..." className="w-56 font-mono text-xs" />
-          <Button variant="outline" size="sm" onClick={generateAutoNote} title="Auto-generate note" className="font-mono text-xs">
-            <IconSparkles data-icon="inline-start" /> Auto Note
+          <Button onClick={handleExportVideo} size="sm" variant="outline" disabled={isExporting || primaryTrack.clips.length === 0} className="h-8 text-xs gap-1.5">
+            {isExporting ? <Spinner className="size-3.5" /> : <IconDownload data-icon="inline-start" />}
+            {isExporting ? 'Exporting...' : 'Export'}
           </Button>
-          <Button onClick={handleSaveCommit} size="sm" variant="default" className="font-semibold">
-            <IconDeviceFloppy data-icon="inline-start" /> Save Project Version
+          <Button onClick={handleSaveCommit} size="sm" className="h-8 text-xs gap-1.5 font-semibold">
+            <IconDeviceFloppy data-icon="inline-start" /> Save
           </Button>
         </div>
       </div>
 
       {saveStatus && (
-        <div className="bg-muted/40 border-b border-border px-4 py-2 text-xs font-mono text-primary flex items-center justify-between">
+        <div className="bg-muted/40 border-b border-border px-4 py-2 text-xs text-primary flex items-center justify-between">
           <span>{saveStatus}</span>
           <Button variant="ghost" size="icon-xs" onClick={() => setSaveStatus(null)}>✕</Button>
         </div>

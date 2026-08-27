@@ -1,17 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import {
-  IconGitCompare,
-  IconPlayerSkipBack,
-  IconPlayerSkipForward,
-  IconPlayerPlay,
-  IconPlayerPause,
-} from '@tabler/icons-react';
+import { IconGitCompare } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
-import { Spinner } from '@/components/ui/spinner';
 import { Commit, Timeline, TimelineDiff } from '@/lib/types';
 import { API_URL } from '@/lib/api';
 import { getClipInfoAtTime } from '@/lib/editor-state';
@@ -26,10 +17,6 @@ import {
   TimelineSlider,
   TimeDisplay,
 } from '@/components/video-component';
-
-
-
-
 
 export interface ClipRef {
   media: string;
@@ -175,9 +162,7 @@ export default function DiffInspector({
       prevClipAIdRef.current = currentClipAId;
       if (videoRefA.current && activeClipA) {
         videoRefA.current.currentTime = activeClipA.videoTime;
-        if (isPlaying) {
-          videoRefA.current.play().catch(console.warn);
-        }
+        if (isPlaying) videoRefA.current.play().catch(console.warn);
       }
     }
   }, [activeClipA, isPlaying]);
@@ -188,9 +173,7 @@ export default function DiffInspector({
       prevClipBIdRef.current = currentClipBId;
       if (videoRefB.current && activeClipB) {
         videoRefB.current.currentTime = activeClipB.videoTime;
-        if (isPlaying) {
-          videoRefB.current.play().catch(console.warn);
-        }
+        if (isPlaying) videoRefB.current.play().catch(console.warn);
       }
     }
   }, [activeClipB, isPlaying]);
@@ -263,7 +246,6 @@ export default function DiffInspector({
           videoRefB.current?.pause();
           return maxDuration;
         }
-
         const infoA = getClipInfoAtTime(clipsA, next);
         if (videoRefA.current && infoA) {
           if (videoRefA.current.paused && videoRefA.current.readyState >= 2) {
@@ -271,7 +253,6 @@ export default function DiffInspector({
             videoRefA.current.play().catch(console.warn);
           }
         }
-
         const infoB = getClipInfoAtTime(clipsB, next);
         if (videoRefB.current && infoB) {
           if (videoRefB.current.paused && videoRefB.current.readyState >= 2) {
@@ -279,39 +260,36 @@ export default function DiffInspector({
             videoRefB.current.play().catch(console.warn);
           }
         }
-
         return next;
       });
     }, 50);
     return () => clearInterval(interval);
   }, [isPlaying, maxDuration, clipsA, clipsB]);
 
-
   return (
-    <Card className="p-6 bg-card/60 border border-border flex flex-col gap-6 shadow-xl">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-border">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-primary/10 text-primary border border-primary/20">
-            <IconGitCompare className="size-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-base text-foreground">Dual-View Comparison & Visual Diff</h3>
-              <Badge variant="outline" className="font-mono text-[10px]">Side-by-Side Sync Player</Badge>
-            </div>
-            <p className="text-xs text-muted-foreground font-mono">
-              Compare two versions simultaneously with synchronized lockstep video playback.
-            </p>
-          </div>
+    <div className="max-w-5xl mx-auto flex flex-col gap-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <IconGitCompare className="size-4 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">Compare Versions</h3>
+          {diff && (
+            <span className="text-[10px] text-muted-foreground">
+              {diff.added.length} added · {diff.removed.length} removed · {diff.moved.length} modified
+            </span>
+          )}
         </div>
         {onClose && (
-          <Button variant="ghost" size="sm" onClick={onClose}>✕ Close Diff</Button>
+          <Button variant="ghost" size="sm" onClick={onClose} className="h-7 text-[11px] text-muted-foreground hover:text-foreground">
+            ✕ Close
+          </Button>
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-4 items-stretch">
+      {/* Version selectors — flat row */}
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-center">
         <VersionSelector
-          label="Base Version (A)"
+          label="Base (A)"
           badge={baseCommitId || 'None'}
           commit={baseCommit}
           commitId={baseCommitId}
@@ -322,11 +300,11 @@ export default function DiffInspector({
           otherCommitId={targetCommitId}
           onSelect={onSelectBase}
         />
-        <div className="hidden md:flex items-center justify-center px-0.5">
-          <div className="w-px h-full min-h-[70px] bg-gradient-to-b from-transparent via-border to-transparent [mask-image:radial-gradient(ellipse_at_center,black_50%,transparent_100%)]" />
+        <div className="hidden md:flex items-center justify-center">
+          <div className="w-8 h-px bg-border/60" />
         </div>
         <VersionSelector
-          label="Compare Target (B)"
+          label="Target (B)"
           badge={targetCommitId || 'None'}
           badgeVariant="default"
           commit={targetCommit}
@@ -340,6 +318,7 @@ export default function DiffInspector({
         />
       </div>
 
+      {/* Dual video */}
       <DualVideoMonitor
         baseCommit={baseCommit}
         targetCommit={targetCommit}
@@ -363,34 +342,20 @@ export default function DiffInspector({
         onSeekB={handleMasterSeek}
       />
 
-      <div className="flex flex-col gap-2 pt-3 border-t border-border/50">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-1.5">
-            <SkipBackwardButton
-              onSeekStart={() => handleMasterSeek(0)}
-              title="Jump Both to Start"
-            />
+      {/* Sync transport */}
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <SkipBackwardButton onSeekStart={() => handleMasterSeek(0)} title="Jump to start" />
             <PlayPauseButton
               isPlaying={isPlaying}
               onToggle={toggleMasterPlay}
-              playLabel="Play Both Synced"
-              pauseLabel="Pause Both"
+              playLabel="Play synced"
+              pauseLabel="Pause"
             />
-            <SkipForwardButton
-              onSeekEnd={() => handleMasterSeek(maxDuration)}
-              title="Jump Both to End"
-            />
+            <SkipForwardButton onSeekEnd={() => handleMasterSeek(maxDuration)} title="Jump to end" />
           </div>
-
-          <p className="text-primary flex items-center gap-1.5 py-1 px-2.5">
-            <span>Sync Playhead:</span>
-            <TimeDisplay
-              currentTime={masterTime}
-              duration={maxDuration}
-              showDuration={true}
-            />
-          </p>
-
+          <TimeDisplay currentTime={masterTime} duration={maxDuration} showDuration />
         </div>
         <TimelineSlider
           currentTime={masterTime}
@@ -399,13 +364,10 @@ export default function DiffInspector({
           showTimeDisplay={false}
           isPlaying={isPlaying}
         />
-
-
       </div>
 
-
-
+      {/* Diff details */}
       <DiffDetails diff={diff} loading={loading} />
-    </Card>
+    </div>
   );
 }

@@ -12,7 +12,6 @@ import {
   IconRecycle,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 
 export interface GcReport {
@@ -149,7 +148,7 @@ export default function StorageCleanupModal({
                 <span className="text-[11px] font-medium">Total Media Store</span>
                 <IconDatabase className="size-3.5 text-primary" />
               </div>
-              <div className="text-xl font-bold text-foreground font-mono">
+              <div className="text-xl font-bold text-foreground">
                 {isLoadingEstimate ? (
                   <Spinner className="size-4" />
                 ) : (
@@ -166,7 +165,7 @@ export default function StorageCleanupModal({
                 <span className="text-[11px] font-medium font-semibold">Reclaimable Space</span>
                 <IconRecycle className="size-3.5" />
               </div>
-              <div className="text-xl font-bold text-emerald-400 font-mono">
+              <div className="text-xl font-bold text-emerald-400">
                 {isLoadingEstimate ? (
                   <Spinner className="size-4" />
                 ) : (
@@ -222,7 +221,7 @@ export default function StorageCleanupModal({
               <select
                 value={pruneAfterDays}
                 onChange={(e) => setPruneAfterDays(Number(e.target.value))}
-                className="bg-background border border-border text-xs rounded-lg px-2.5 py-1 text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                className="bg-background border border-border text-xs rounded-lg px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
               >
                 <option value={7}>7 Days</option>
                 <option value={14}>14 Days</option>

@@ -2,10 +2,8 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  IconHistory,
   IconSearch,
   IconRefresh,
-  IconGitCompare,
   IconGitBranch,
   IconList,
   IconGitMerge,
@@ -15,7 +13,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
 import {
   Sidebar,
   SidebarContent,
@@ -32,7 +29,6 @@ import {
 } from '@/components/ui/sidebar';
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tree } from '@/components/ui/tree';
 import { cn } from '@/lib/utils';
 import { Commit, CommitTreeNode, Timeline } from '@/lib/types';
 import { API_URL } from '@/lib/api';
@@ -59,16 +55,15 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [loadingTimeline, setLoadingTimeline] = useState(false);
   const [activeHeadId, setActiveHeadId] = useState<string | null>(
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
   const [searchQuery, setSearchQuery] = useState('');
-  const [starredOnly, setStarredOnly] = useState(false);
-  const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'timeline' | 'json'>('timeline');
+  const [starredOnly, _setStarredOnly] = useState(false);
+  const [selectedTagFilter, _setSelectedTagFilter] = useState<string | null>(null);
+  const [_activeTab, _setActiveTab] = useState<'timeline' | 'json'>('timeline');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoTime, setVideoTime] = useState(0);
@@ -300,7 +295,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     const targetId = commitId;
 
     // Parent of selected video is the Base (A)
-    let baseId: string | null = null;
+    let baseId: string | null;
     if (targetCommit?.parent && commitMap.has(targetCommit.parent)) {
       baseId = targetCommit.parent;
     } else {
@@ -335,7 +330,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     if (selectedCommitId) handleSelectCommit(selectedCommitId, 'preview');
   }, []);
 
-  const allUniqueTags = Array.from(new Set(commits.flatMap((c) => c.tags || [])));
+  const _allUniqueTags = Array.from(new Set(commits.flatMap((c) => c.tags || [])));
   const filteredCommits = commits.filter((c) => {
     const matchesSearch =
       c.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -362,7 +357,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     });
   };
 
-  const handleCollapseAll = () => {
+  const _handleCollapseAll = () => {
     const allParentIds = new Set<string>();
     const collect = (node: CommitTreeNode) => {
       if (node.children?.length) {
@@ -374,100 +369,58 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     setCollapsedNodeIds(allParentIds);
   };
 
-  const handleExpandAll = () => setCollapsedNodeIds(new Set());
+  const _handleExpandAll = () => setCollapsedNodeIds(new Set());
 
   return (
     <SidebarProvider
       className="h-full min-h-0 w-full overflow-hidden"
-      style={{ "--sidebar-width": "22rem", "--sidebar-width-mobile": "18rem" } as React.CSSProperties}
+      style={{ "--sidebar-width": "20rem", "--sidebar-width-mobile": "16rem" } as React.CSSProperties}
     >
       <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans relative">
         <Sidebar className="border-r border-border bg-card/40" collapsible="offcanvas">
-          <SidebarHeader className="p-3 border-b border-border flex flex-col gap-2.5">
+          <SidebarHeader className="p-3 border-b border-border/50 flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <SidebarTrigger className="size-7 text-muted-foreground hover:text-foreground hover:bg-muted shrink-0" />
-                <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
-                  <IconHistory className="size-4 text-primary" />
-                  <span>Project Version History</span>
-                </div>
-              </div>
+              <span className="text-[11px] font-semibold text-foreground">
+                History
+              </span>
 
-              <div className="flex items-center gap-1">
-                <div className="bg-muted/40 p-0.5 rounded-lg border border-border flex items-center gap-0.5">
-                  <Button variant={viewMode === 'tree' ? 'secondary' : 'ghost'} size="icon-xs" onClick={() => setViewMode('tree')} title="Branch Tree View">
-                    <IconGitBranch className="size-3" />
-                  </Button>
-                  <Button variant={viewMode === 'flat' ? 'secondary' : 'ghost'} size="icon-xs" onClick={() => setViewMode('flat')} title="Chronological List">
-                    <IconList className="size-3" />
-                  </Button>
-                  {viewMode === 'tree' && (
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={collapsedNodeIds.size > 0 ? handleExpandAll : handleCollapseAll}
-                      title={collapsedNodeIds.size > 0 ? 'Expand All' : 'Collapse All'}
-                      className="text-muted-foreground hover:text-foreground border-l border-border/50 rounded-none pl-1"
-                    >
-                      {collapsedNodeIds.size > 0 ? (
-                        <IconGitBranch className="size-3 text-primary" />
-                      ) : (
-                        <IconGitBranch className="size-3" />
-                      )}
-                    </Button>
-                  )}
-                </div>
-
+              <div className="flex items-center gap-0.5 bg-muted/30 p-0.5 rounded-md">
                 <Button
-                  variant={isDiffMode ? 'default' : 'outline'}
-                  size="xs"
-                  onClick={handleToggleDiff}
-                  className="text-[10px] gap-1 font-mono"
+                  variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
+                  size="icon-xs"
+                  onClick={() => setViewMode('tree')}
+                  className="size-5"
+                  title="Tree"
                 >
-                  <IconGitCompare className="size-3" />
-                  {isDiffMode ? 'Exit Diff' : 'Compare'}
+                  <IconGitBranch className="size-2.5" />
                 </Button>
-
+                <Button
+                  variant={viewMode === 'flat' ? 'secondary' : 'ghost'}
+                  size="icon-xs"
+                  onClick={() => setViewMode('flat')}
+                  className="size-5"
+                  title="List"
+                >
+                  <IconList className="size-2.5" />
+                </Button>
               </div>
             </div>
 
             <div className="relative">
-              <IconSearch className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+              <IconSearch className="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
               <Input
-                placeholder="Search versions, tags, notes..."
+                placeholder="Search versions..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-8 text-xs"
+                className="pl-7 h-7 text-[11px] bg-muted/20 border-border/40"
               />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              <Button
-                variant={starredOnly ? 'default' : 'outline'}
-                size="xs"
-                onClick={() => { setStarredOnly(!starredOnly); setSelectedTagFilter(null); }}
-                className="text-[10px]"
-              >
-                {starredOnly ? 'Tagged Only' : 'Show All'}
-              </Button>
-              {allUniqueTags.map((tag) => (
-                <Button
-                  key={tag}
-                  variant={selectedTagFilter === tag ? 'secondary' : 'ghost'}
-                  size="xs"
-                  onClick={() => setSelectedTagFilter(selectedTagFilter === tag ? null : tag)}
-                  className={cn('text-[10px] h-6 px-2', selectedTagFilter === tag && 'border border-primary')}
-                >
-                  {tag}
-                </Button>
-              ))}
             </div>
           </SidebarHeader>
 
           <SidebarContent className="p-0 flex flex-col">
             {selectedForSquash.length >= 2 && (
               <div className="p-2.5 bg-primary/15 border-b border-primary/30 flex items-center justify-between gap-2 shrink-0 animate-in fade-in slide-in-from-top-2">
-                <div className="flex items-center gap-1.5 text-xs font-mono">
+                <div className="flex items-center gap-1.5 text-xs">
                   <IconGitMerge className="size-4 text-primary" />
                   <span className="font-bold text-foreground">{selectedForSquash.length} selected</span>
                 </div>
@@ -482,13 +435,10 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               </div>
             )}
 
-            <ScrollArea className="h-full w-full p-2">
+            <ScrollArea className="h-full w-full p-2 overflow-x-hidden">
               <SidebarGroup className="p-0">
-                <SidebarGroupLabel className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
-                  <span>{viewMode === 'tree' ? 'Saved Branches & Cuts' : 'All Saves'}</span>
-                  <Badge variant="outline" className="text-[9px] font-mono">
-                    {filteredCommits.length} saves
-                  </Badge>
+                <SidebarGroupLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/60 px-2 py-1">
+                  {viewMode === 'tree' ? 'Branches' : 'All saves'}
                 </SidebarGroupLabel>
                 <SidebarGroupContent>
                   {viewMode === 'tree' && !searchQuery && !starredOnly && !selectedTagFilter ? (
@@ -498,21 +448,22 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                           No saved versions yet.
                         </div>
                       ) : (
-                        <Tree initialSelectedId={selectedCommitId || undefined} indicator className="w-full">
-                          {treeNodes.map((root) => (
+                        <div className="flex flex-col py-1">
+                          {treeNodes.map((root, idx) => (
                             <CommitTreeNodeItem
                               key={root.commit.id}
                               node={root}
-                              parentId={null}
+                              depth={0}
+                              isLast={idx === treeNodes.length - 1}
+                              parentLines={[]}
                               selectedCommitId={selectedCommitId}
                               activeHeadId={activeHeadId}
                               selectedForSquash={selectedForSquash}
-                              hoveredNodeId={hoveredNodeId}
                               collapsedNodeIds={collapsedNodeIds}
                               isDiffMode={isDiffMode}
                               diffBaseId={diffBaseId}
                               diffTargetId={diffTargetId}
-                              onHover={setHoveredNodeId}
+                              onHover={() => {}}
                               onSelect={(id) => handleSelectCommit(id, 'preview')}
                               onToggleCollapse={toggleCollapseNode}
                               onToggleSelectForSquash={handleToggleSelectForSquash}
@@ -520,7 +471,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                               onSetDiffBaseId={setDiffBaseId}
                             />
                           ))}
-                        </Tree>
+                        </div>
                       )}
                     </div>
                   ) : (
@@ -548,7 +499,6 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                             onSelect={(id) => handleSelectCommit(id, 'preview')}
                             onToggleSelectForSquash={handleToggleSelectForSquash}
                             onToggleStar={handleToggleStar}
-                            onOpenDiff={handleOpenDiffWithCommit}
                           />
                         ))
                       )}
@@ -568,37 +518,15 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
           <SidebarRail />
         </Sidebar>
 
-        <SidebarInset className="flex-1 flex flex-col bg-background min-w-0 overflow-hidden">
-          <header className="h-12 border-b border-border bg-card/40 px-4 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <SidebarTrigger className="-ml-1 mr-1" />
-              <Separator orientation="vertical" className="h-4" />
-              {isDiffMode ? (
-                <>
-                  <IconGitCompare className="size-4 text-primary" />
-                  <span className="font-semibold text-foreground">Dual Version Comparison</span>
-                </>
-              ) : (
-                <>
-                  <IconHistory className="size-4 text-primary" />
-                  <span className="font-semibold text-foreground">Version Player & Inspector</span>
-                </>
-              )}
+        <SidebarInset className="flex-1 flex flex-col bg-background min-w-0 min-h-0">
+          <header className="h-10 border-b border-border bg-card/40 px-4 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <SidebarTrigger className="-ml-1" />
+              <span>{isDiffMode ? 'Comparison' : 'Preview'}</span>
               {statusMessage && (
-                <>
-                  <Separator orientation="vertical" className="h-3" />
-                  <span className="text-primary font-medium">{statusMessage}</span>
-                </>
+                <span className="text-primary font-medium">· {statusMessage}</span>
               )}
             </div>
-            <Button
-              variant={isDiffMode ? 'default' : 'outline'}
-              size="sm"
-              onClick={handleToggleDiff}
-            >
-              <IconGitCompare data-icon="inline-start" />
-              {isDiffMode ? 'Back to Single View' : 'Compare 2 Versions'}
-            </Button>
 
           </header>
 
@@ -617,7 +545,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                 </div>
               ) : loadingTimeline ? (
                 <div className="h-full flex items-center justify-center py-20">
-                  <div className="flex items-center gap-3 text-muted-foreground text-sm font-mono">
+                  <div className="flex items-center gap-3 text-muted-foreground text-sm">
                     <Spinner className="size-5 text-primary" />
                     Loading version media...
                   </div>
@@ -645,6 +573,10 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                   onSetExportTarget={setExportTarget}
                   onAddTag={handleAddTag}
                   onRemoveTag={handleRemoveTag}
+                  onBranchCreated={async (newId) => {
+                    await refreshAll();
+                    await handleSelectCommit(newId, 'preview');
+                  }}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center text-muted-foreground text-sm">

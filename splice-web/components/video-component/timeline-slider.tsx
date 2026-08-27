@@ -110,7 +110,7 @@ export function TimelineSlider({
           ref={rangeRef}
           onInput={handleSeek}
           onChange={handleSeek}
-          mediaController={`none-${instanceId}`}
+          {...{mediaController: `none-${instanceId}`} as React.ComponentProps<typeof MediaTimeRange>}
           mediaCurrentTime={displayTime}
           mediaDuration={safeDuration}
           mediaPaused={!isPlaying}
@@ -118,7 +118,7 @@ export function TimelineSlider({
             ['--media-range-track-transition' as string]: 'none',
             ['--media-range-thumb-transition' as string]: 'none',
           }}
-          className="w-full flex-1 cursor-pointer bg-transparent hover:bg-zinc-900 transition-colors"
+        className="w-full cursor-pointer bg-transparent hover:bg-zinc-900 transition-colors"
         />
       </div>
 
