@@ -19,6 +19,7 @@
 
 # production
 /build
+/.agents
 
 # misc
 .DS_Store
