@@ -29,6 +29,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconSparkles,
+  IconDownload,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -48,11 +49,43 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarRail,
+  SidebarTrigger,
 } from '@/components/ui/sidebar';
+import {
+  VideoPlayer,
+  VideoPlayerControlBar,
+  VideoPlayerPlayButton,
+  VideoPlayerTimeRange,
+  VideoPlayerTimeDisplay,
+  VideoPlayerMuteButton,
+  VideoPlayerVolumeRange,
+  VideoPlayerSeekBackwardButton,
+  VideoPlayerSeekForwardButton,
+} from '@/components/ui/video_player';
+import { Spinner } from '@/components/ui/spinner';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import DiffInspector from './DiffInspector';
+
+
+
 import { cn } from '@/lib/utils';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+function formatDate(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    return isNaN(d.getTime()) ? isoStr.slice(0, 19).replace('T', ' ') : d.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoStr;
+  }
+}
+
 
 export interface Commit {
   id: string;
@@ -195,8 +228,13 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   }, [fetchCommits, fetchTree]);
 
   useEffect(() => {
-    fetchTree();
-  }, [fetchTree]);
+    setCommits(initialCommits);
+  }, [initialCommits]);
+
+  useEffect(() => {
+    refreshAll();
+  }, [refreshAll]);
+
 
   // Video volume sync
   useEffect(() => {
@@ -368,11 +406,73 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     }
   };
 
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+
+  const handleDownloadCommitVideo = async (commitId: string, message: string) => {
+
+    setIsDownloading(true);
+    try {
+      const res = await fetch(`${API_URL}/commits/${commitId}/export`);
+      if (!res.ok) {
+        throw new Error(`Export failed with HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `splice_${message.replace(/[^a-zA-Z0-9_-]/g, '_')}_${commitId.slice(0, 6)}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setStatusMessage('Video downloaded successfully!');
+    } catch (err: any) {
+      console.error('Download error:', err);
+      alert(`Download failed: ${err.message || err}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   const handleOpenDiffWithCommit = (commitId: string) => {
+    const commitMap = new Map<string, Commit>(commits.map((c) => [c.id, c]));
+    const targetCommit = commitMap.get(commitId);
+
+    // Find root ID of this commit's tree
+    let rootId = commitId;
+    let curr = targetCommit;
+    const visited = new Set<string>();
+    while (curr && curr.parent && commitMap.has(curr.parent) && !visited.has(curr.id)) {
+      visited.add(curr.id);
+      curr = commitMap.get(curr.parent);
+    }
+    if (curr) rootId = curr.id;
+
+    // Filter all commits belonging to the SAME project tree
+    const sameTreeCommits = commits.filter((c) => {
+      let rId = c.id;
+      let walk: Commit | undefined = c;
+      const v = new Set<string>();
+      while (walk && walk.parent && commitMap.has(walk.parent) && !v.has(walk.id)) {
+        v.add(walk.id);
+        walk = commitMap.get(walk.parent);
+      }
+      if (walk) rId = walk.id;
+      return rId === rootId;
+    });
+
+    const otherInSameTree =
+      (targetCommit?.parent && commitMap.get(targetCommit.parent)) ||
+      sameTreeCommits.find((c) => c.parent === commitId) ||
+      sameTreeCommits.find((c) => c.id !== commitId) ||
+      targetCommit;
+
     setDiffBaseId(commitId);
-    setDiffTargetId(activeHeadId || commits[0]?.id || commitId);
+    setDiffTargetId(otherInSameTree ? otherInSameTree.id : commitId);
     setIsDiffMode(true);
   };
+
+
 
   useEffect(() => {
     if (selectedCommitId) {
@@ -403,11 +503,44 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const selectedCommit = commits.find((c) => c.id === selectedCommitId);
   const activeMediaHash = timeline?.media_refs[0] || selectedCommit?.media_refs[0] || null;
 
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
+
+  const toggleCollapseNode = (nodeId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCollapsedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  };
+
+  const handleCollapseAll = () => {
+    const allParentIds = new Set<string>();
+    const collectParentIds = (node: CommitTreeNode) => {
+      if (node.children && node.children.length > 0) {
+        allParentIds.add(node.commit.id);
+        node.children.forEach(collectParentIds);
+      }
+    };
+    treeNodes.forEach(collectParentIds);
+    setCollapsedNodeIds(allParentIds);
+  };
+
+  const handleExpandAll = () => {
+    setCollapsedNodeIds(new Set());
+  };
+
   // Render individual tree node recursively
   const renderTreeNode = (node: CommitTreeNode) => {
     const commit = node.commit;
     const isSelected = selectedCommitId === commit.id;
     const isHead = activeHeadId === commit.id;
+    const hasChildren = node.children && node.children.length > 0;
+    const isCollapsed = collapsedNodeIds.has(node.commit.id);
     const hasStarTag =
       node.tags?.includes('Picture Lock') ||
       node.tags?.includes("Director's Cut") ||
@@ -417,12 +550,31 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
       <div key={node.commit.id} className="flex flex-col gap-1 w-full">
         <div
           style={{ paddingLeft: `${node.depth * 14}px` }}
-          className="w-full flex items-center relative"
+          className="w-full flex items-center relative gap-1"
         >
           {node.depth > 0 && (
-            <div className="text-muted-foreground/60 font-mono text-[10px] select-none mr-1">
+            <div className="text-muted-foreground/60 font-mono text-[10px] select-none shrink-0">
               └──
             </div>
+          )}
+
+          {/* Collapsible toggle for branches with children */}
+          {hasChildren ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={(e) => toggleCollapseNode(node.commit.id, e)}
+              className="size-5 shrink-0 hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+              title={isCollapsed ? 'Expand branches' : 'Collapse branches'}
+            >
+              {isCollapsed ? (
+                <IconChevronRight className="size-3.5" />
+              ) : (
+                <IconChevronDown className="size-3.5" />
+              )}
+            </Button>
+          ) : (
+            <div className="size-5 shrink-0" />
           )}
 
           <div
@@ -434,7 +586,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
               }
             }}
             className={cn(
-              'flex-1 text-left rounded-xl p-2.5 transition-all border flex flex-col gap-1.5 cursor-pointer relative',
+              'flex-1 min-w-0 text-left rounded-xl p-2.5 transition-all border flex flex-col gap-1.5 cursor-pointer relative',
               isSelected && !isDiffMode
                 ? 'bg-card border-primary/70 shadow-sm'
                 : 'bg-card/20 hover:bg-card/60 border-border/40',
@@ -463,7 +615,14 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                         ACTIVE VERSION
                       </Badge>
                     )}
-                    {node.depth > 0 && (
+                    {node.depth === 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="text-[8px] px-1 py-0 bg-emerald-500/10 text-emerald-400 border-emerald-500/30 font-semibold"
+                      >
+                        ROOT PROJECT
+                      </Badge>
+                    ) : (
                       <Badge
                         variant="secondary"
                         className="text-[8px] px-1 py-0 bg-primary/10 text-primary border-primary/30"
@@ -512,11 +671,19 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                 ))}
               </div>
             )}
+
+            {/* Collapsed Branch Count Indicator */}
+            {hasChildren && isCollapsed && (
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono pt-0.5">
+                <IconGitBranch className="size-3 text-primary" />
+                <span>+{node.children.length} branch(es) hidden (click arrow to expand)</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Recursive Children */}
-        {node.children && node.children.length > 0 && (
+        {/* Recursive Children (rendered when not collapsed) */}
+        {hasChildren && !isCollapsed && (
           <div className="flex flex-col gap-1 w-full">
             {node.children.map((child) => renderTreeNode(child))}
           </div>
@@ -525,19 +692,28 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     );
   };
 
+
   return (
     <SidebarProvider className="h-full">
       <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans">
         {/* Sidebar: Version History & Saves */}
-        <Sidebar className="border-r border-border bg-card/40 w-96 shrink-0" collapsible="none">
+        <Sidebar className="border-r border-border bg-card/40 w-96 shrink-0" collapsible="offcanvas">
           <SidebarHeader className="p-3 border-b border-border flex flex-col gap-2.5">
+
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
-                <IconHistory className="size-4 text-primary" />
-                <span>Project Version History</span>
+              <div className="flex items-center gap-1.5">
+                <SidebarTrigger
+                  className="size-7 text-muted-foreground hover:text-foreground hover:bg-muted shrink-0"
+                  title="Close Sidebar (Cmd+B)"
+                />
+                <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
+                  <IconHistory className="size-4 text-primary" />
+                  <span>Project Version History</span>
+                </div>
               </div>
+
               <div className="flex items-center gap-1">
-                {/* View Switcher */}
+                {/* View Switcher & Tree Collapse Controls */}
                 <div className="bg-muted/40 p-0.5 rounded-lg border border-border flex items-center gap-0.5">
                   <Button
                     variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
@@ -555,6 +731,21 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                   >
                     <IconList className="size-3" />
                   </Button>
+                  {viewMode === 'tree' && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={collapsedNodeIds.size > 0 ? handleExpandAll : handleCollapseAll}
+                      title={collapsedNodeIds.size > 0 ? 'Expand All Branches' : 'Collapse All Branches'}
+                      className="text-muted-foreground hover:text-foreground border-l border-border/50 rounded-none pl-1"
+                    >
+                      {collapsedNodeIds.size > 0 ? (
+                        <IconChevronRight className="size-3 text-primary" />
+                      ) : (
+                        <IconChevronDown className="size-3" />
+                      )}
+                    </Button>
+                  )}
                 </div>
 
                 <Button
@@ -567,6 +758,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                   {isDiffMode ? 'Exit Diff' : 'Compare'}
                 </Button>
               </div>
+
             </div>
 
             {/* Search Input */}
@@ -619,132 +811,129 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             </div>
           </SidebarHeader>
 
-          <SidebarContent className="p-2">
-            <SidebarGroup className="p-0">
-              <SidebarGroupLabel className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
-                <span>{viewMode === 'tree' ? 'Saved Branches & Cuts' : 'All Saves'}</span>
-                <Badge variant="outline" className="text-[9px] font-mono">
-                  {filteredCommits.length} saves
-                </Badge>
-              </SidebarGroupLabel>
-              <SidebarGroupContent>
-                {viewMode === 'tree' && !searchQuery && !starredOnly && !selectedTagFilter ? (
-                  <div className="flex flex-col gap-1.5 py-1">
-                    {treeNodes.length === 0 ? (
-                      <div className="text-center py-8 text-muted-foreground text-xs">
-                        No saved versions yet. Save your first edit in the Timeline Editor!
-                      </div>
-                    ) : (
-                      treeNodes.map((root) => renderTreeNode(root))
-                    )}
-                  </div>
-                ) : (
-                  <SidebarMenu className="gap-1.5">
-                    {filteredCommits.length === 0 ? (
-                      <div className="text-center py-10 text-muted-foreground text-xs flex flex-col items-center gap-2">
-                        <IconFilter className="size-6 text-muted-foreground/40" />
-                        <span>No matching versions found</span>
-                      </div>
-                    ) : (
-                      filteredCommits.map((commit, i) => {
-                        const isSelected = selectedCommitId === commit.id;
-                        const isHead = activeHeadId === commit.id;
-                        const hasStarTag =
-                          commit.tags?.includes('Picture Lock') ||
-                          commit.tags?.includes("Director's Cut") ||
-                          commit.tags?.includes('Starred');
+          <SidebarContent className="p-0">
+            <ScrollArea className="h-full w-full p-2">
+              <SidebarGroup className="p-0">
+                <SidebarGroupLabel className="text-[11px] uppercase tracking-wider text-muted-foreground px-2 py-1 flex items-center justify-between">
+                  <span>{viewMode === 'tree' ? 'Saved Branches & Cuts' : 'All Saves'}</span>
+                  <Badge variant="outline" className="text-[9px] font-mono">
+                    {filteredCommits.length} saves
+                  </Badge>
+                </SidebarGroupLabel>
+                <SidebarGroupContent>
+                  {viewMode === 'tree' && !searchQuery && !starredOnly && !selectedTagFilter ? (
+                    <div className="flex flex-col gap-1.5 py-1">
+                      {treeNodes.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground text-xs">
+                          No saved versions yet. Save your first edit in the Timeline Editor!
+                        </div>
+                      ) : (
+                        treeNodes.map((root) => renderTreeNode(root))
+                      )}
+                    </div>
+                  ) : (
+                    <SidebarMenu className="gap-1.5">
+                      {filteredCommits.length === 0 ? (
+                        <div className="text-center py-10 text-muted-foreground text-xs flex flex-col items-center gap-2">
+                          <IconFilter className="size-6 text-muted-foreground/40" />
+                          <span>No matching versions found</span>
+                        </div>
+                      ) : (
+                        filteredCommits.map((commit, i) => {
+                          const isSelected = selectedCommitId === commit.id;
+                          const isHead = activeHeadId === commit.id;
+                          const hasStarTag =
+                            commit.tags?.includes('Picture Lock') ||
+                            commit.tags?.includes("Director's Cut") ||
+                            commit.tags?.includes('Starred');
 
-                        return (
-                          <SidebarMenuItem key={commit.id}>
-                            <div
-                              onClick={() => {
-                                if (isDiffMode) {
-                                  setDiffBaseId(commit.id);
-                                } else {
-                                  handleSelectCommit(commit.id, 'preview');
-                                }
-                              }}
-                              className={cn(
-                                'w-full text-left rounded-xl p-2.5 transition-all border flex flex-col gap-2 cursor-pointer relative',
-                                isSelected && !isDiffMode
-                                  ? 'bg-card border-primary/60 shadow-sm'
-                                  : 'bg-card/20 hover:bg-card/60 border-border/40',
-                                isDiffMode && diffBaseId === commit.id && 'border-amber-500 bg-amber-500/10',
-                                isDiffMode && diffTargetId === commit.id && 'border-primary bg-primary/10'
-                              )}
-                            >
-                              <div className="flex gap-2.5 items-start">
-                                <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
-                                  <img
-                                    src={`${API_URL}/commits/${commit.id}/thumbnail`}
-                                    alt="Frame"
-                                    className="w-full h-full object-cover"
-                                    onError={(e) => {
-                                      (e.target as HTMLElement).style.display = 'none';
-                                    }}
-                                  />
-                                </div>
+                          return (
+                            <SidebarMenuItem key={commit.id}>
+                              <div
+                                onClick={() => handleSelectCommit(commit.id, 'preview')}
+                                className={cn(
+                                  'group/item flex items-center justify-between p-2 rounded-xl border text-xs cursor-pointer transition-all w-full select-none',
+                                  isSelected
+                                    ? 'bg-accent border-primary/50 text-accent-foreground shadow-sm'
+                                    : 'bg-card/40 border-border text-foreground hover:bg-accent/40'
+                                )}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="relative size-12 rounded-lg overflow-hidden shrink-0 bg-black border border-border">
+                                    <img
+                                      src={`${API_URL}/commits/${commit.id}/thumbnail`}
+                                      alt={commit.message}
+                                      className="size-full object-cover"
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none';
+                                      }}
+                                    />
+                                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-[9px] font-mono text-muted-foreground">
+                                      #{filteredCommits.length - i}
+                                    </div>
+                                  </div>
 
-                                <div className="flex-1 min-w-0 flex flex-col gap-1">
-                                  <div className="flex items-center justify-between gap-1">
-                                    <div className="flex items-center gap-1 flex-wrap">
-                                      <Badge variant="outline" className="font-mono text-[9px] px-1 py-0">
-                                        v{commits.length - i}
-                                      </Badge>
+                                  <div className="flex flex-col min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-foreground truncate max-w-[140px]">
+                                        {commit.message}
+                                      </span>
                                       {isHead && (
-                                        <Badge variant="default" className="text-[9px] px-1 py-0">
-                                          ACTIVE
+                                        <Badge
+                                          variant="default"
+                                          className="text-[9px] px-1 py-0 font-mono h-4 shrink-0"
+                                        >
+                                          HEAD
                                         </Badge>
                                       )}
-                                    </div>
-
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-xs"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleToggleStar(commit);
-                                      }}
-                                      title={hasStarTag ? 'Remove Star Tag' : 'Tag as Picture Lock'}
-                                      className="size-5 hover:text-amber-400"
-                                    >
-                                      {hasStarTag ? (
-                                        <IconStarFilled className="size-3.5 text-amber-400" />
-                                      ) : (
-                                        <IconStar className="size-3.5 text-muted-foreground" />
+                                      {hasStarTag && (
+                                        <IconStarFilled className="size-3 text-amber-400 shrink-0" />
                                       )}
-                                    </Button>
+                                    </div>
+                                    <div className="text-[10px] text-muted-foreground font-mono flex items-center gap-1.5 mt-0.5">
+                                      <span>{commit.id.slice(0, 7)}</span>
+                                      <span>•</span>
+                                      <span>{formatDate(commit.timestamp)}</span>
+                                    </div>
+                                    {commit.tags && commit.tags.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {commit.tags.map((t) => (
+                                          <Badge
+                                            key={t}
+                                            variant="secondary"
+                                            className="text-[8px] px-1 py-0 h-3.5"
+                                          >
+                                            {t}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
+                                </div>
 
-                                  <div className="font-semibold text-xs text-foreground line-clamp-1">
-                                    {commit.message}
-                                  </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenDiffWithCommit(commit.id);
+                                    }}
+                                    title="Compare vs Active"
+                                  >
+                                    <IconGitCompare className="size-3.5" />
+                                  </Button>
                                 </div>
                               </div>
-
-                              {commit.tags && commit.tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1">
-                                  {commit.tags.map((tag) => (
-                                    <Badge
-                                      key={tag}
-                                      variant="secondary"
-                                      className="font-mono text-[9px] px-1.5 py-0 gap-1 bg-amber-500/20 text-amber-300 border-amber-500/40"
-                                    >
-                                      <IconTag className="size-2.5" />
-                                      {tag}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </SidebarMenuItem>
-                        );
-                      })
-                    )}
-                  </SidebarMenu>
-                )}
-              </SidebarGroupContent>
-            </SidebarGroup>
+                            </SidebarMenuItem>
+                          );
+                        })
+                      )}
+                    </SidebarMenu>
+                  )}
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </ScrollArea>
           </SidebarContent>
 
           <SidebarFooter className="p-3 border-t border-border flex flex-col gap-2">
@@ -757,9 +946,11 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
         </Sidebar>
 
         {/* Main View: Interactive Video Player Monitor & Version Actions */}
-        <SidebarInset className="flex-1 flex flex-col bg-background overflow-y-auto">
-          <header className="h-12 border-b border-border bg-card/40 px-6 flex items-center justify-between shrink-0">
+        <SidebarInset className="flex-1 flex flex-col bg-background min-w-0 overflow-hidden">
+          <header className="h-12 border-b border-border bg-card/40 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <SidebarTrigger className="-ml-1 mr-1" />
+              <Separator orientation="vertical" className="h-4" />
               {isDiffMode ? (
                 <>
                   <IconGitCompare className="size-4 text-primary" />
@@ -771,6 +962,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                   <span className="font-semibold text-foreground">Version Player & Inspector</span>
                 </>
               )}
+
               {statusMessage && (
                 <>
                   <Separator orientation="vertical" className="h-3" />
@@ -791,26 +983,28 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
             </div>
           </header>
 
-          <main className="flex-1 p-6 overflow-y-auto">
-            {isDiffMode ? (
-              <div className="max-w-4xl mx-auto">
-                <DiffInspector
-                  commits={commits}
-                  baseCommitId={diffBaseId}
-                  targetCommitId={diffTargetId}
-                  onSelectBase={setDiffBaseId}
-                  onSelectTarget={setDiffTargetId}
-                  onClose={() => setIsDiffMode(false)}
-                />
-              </div>
-            ) : loadingTimeline ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="flex items-center gap-3 text-muted-foreground text-sm">
-                  <div className="size-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                  Loading version media...
+          <ScrollArea className="flex-1 h-full w-full">
+            <main className="p-6">
+              {isDiffMode ? (
+                <div className="max-w-4xl mx-auto">
+                  <DiffInspector
+                    commits={commits}
+                    baseCommitId={diffBaseId}
+                    targetCommitId={diffTargetId}
+                    onSelectBase={setDiffBaseId}
+                    onSelectTarget={setDiffTargetId}
+                    onClose={() => setIsDiffMode(false)}
+                  />
                 </div>
-              </div>
-            ) : timeline ? (
+              ) : loadingTimeline ? (
+                <div className="h-full flex items-center justify-center py-20">
+                  <div className="flex items-center gap-3 text-muted-foreground text-sm font-mono">
+                    <Spinner className="size-5 text-primary" />
+                    Loading version media...
+                  </div>
+                </div>
+              ) : timeline ? (
+
               <div className="max-w-4xl mx-auto flex flex-col gap-6">
                 {/* Main Video Monitor Player Card */}
                 <Card className="p-6 bg-card/50 border border-border flex flex-col gap-4 shadow-md">
@@ -851,6 +1045,23 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                       </Button>
 
                       <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDownloadCommitVideo(timeline.commit_id, timeline.message)}
+                        disabled={isDownloading}
+                        className="font-mono text-xs font-semibold gap-1.5 border-primary/40 text-foreground hover:bg-primary/10"
+                        title="Download rendered MP4 of this version"
+                      >
+                        {isDownloading ? (
+                          <Spinner className="size-3.5 text-primary" />
+                        ) : (
+                          <IconDownload className="size-3.5 text-primary" />
+                        )}
+                        {isDownloading ? 'Rendering MP4...' : 'Download Video'}
+                      </Button>
+
+
+                      <Button
                         variant="secondary"
                         size="sm"
                         onClick={() => setShowSaveAsModal(!showSaveAsModal)}
@@ -868,6 +1079,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                         Compare vs Active
                       </Button>
                     </div>
+
                   </div>
 
                   {/* Branch / Duplicate Version Inline Panel */}
@@ -912,52 +1124,65 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                   {/* LIVE INTERACTIVE VIDEO PLAYER MONITOR */}
                   <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-border flex items-center justify-center shadow-lg my-1">
                     {activeHistoryClip?.clip.media_hash || activeMediaHash ? (
-                      <video
-                        ref={videoRef}
-                        src={`${API_URL}/media/${activeHistoryClip?.clip.media_hash || activeMediaHash}`}
-                        className="w-full h-full object-contain"
-                        playsInline
-                        preload="auto"
-                        onTimeUpdate={() => {
-                          const vid = videoRef.current;
-                          if (!vid || !isPlaying) return;
-                          const currentVidTime = vid.currentTime;
-                          if (activeHistoryClip) {
-                            const clipEnd = activeHistoryClip.clip.duration;
-                            if (currentVidTime >= clipEnd - 0.05) {
-                              const currentIndex = clips.findIndex(
-                                (c) => c.id === activeHistoryClip.clip.id
-                              );
-                              if (currentIndex >= 0 && currentIndex < clips.length - 1) {
-                                const nextClip = clips[currentIndex + 1];
-                                setVideoTime(nextClip.start_time);
-                                if (nextClip.media_hash === activeHistoryClip.clip.media_hash) {
-                                  vid.currentTime = 0;
-                                  vid.play().catch(console.warn);
+                      <VideoPlayer className="w-full h-full rounded-xl overflow-hidden border border-border">
+                        <video
+                          slot="media"
+                          ref={videoRef}
+                          src={`${API_URL}/media/${activeHistoryClip?.clip.media_hash || activeMediaHash}`}
+                          className="w-full h-full object-contain"
+                          playsInline
+                          preload="auto"
+                          suppressHydrationWarning
+                          onTimeUpdate={() => {
+                            const vid = videoRef.current;
+                            if (!vid || !isPlaying) return;
+                            const currentVidTime = vid.currentTime;
+                            if (activeHistoryClip) {
+                              const clipEnd = activeHistoryClip.clip.duration;
+                              if (currentVidTime >= clipEnd - 0.05) {
+                                const currentIndex = clips.findIndex(
+                                  (c) => c.id === activeHistoryClip.clip.id
+                                );
+                                if (currentIndex >= 0 && currentIndex < clips.length - 1) {
+                                  const nextClip = clips[currentIndex + 1];
+                                  setVideoTime(nextClip.start_time);
+                                  if (nextClip.media_hash === activeHistoryClip.clip.media_hash) {
+                                    vid.currentTime = 0;
+                                    vid.play().catch(console.warn);
+                                  }
+                                } else {
+                                  setIsPlaying(false);
+                                  setVideoTime(timeline.total_duration);
+                                  vid.pause();
                                 }
                               } else {
-                                setIsPlaying(false);
-                                setVideoTime(timeline.total_duration);
-                                vid.pause();
+                                setVideoTime(activeHistoryClip.clip.start_time + currentVidTime);
                               }
                             } else {
-                              setVideoTime(activeHistoryClip.clip.start_time + currentVidTime);
+                              setVideoTime(vid.currentTime);
                             }
-                          } else {
-                            setVideoTime(vid.currentTime);
-                          }
-                        }}
-                        onLoadedMetadata={(e) => {
-                          const dur = (e.target as HTMLVideoElement).duration || 10;
-                          setVideoDuration(dur);
-                          if (videoRef.current && activeHistoryClip) {
-                            videoRef.current.currentTime = activeHistoryClip.videoTime;
-                            if (isPlaying) {
-                              videoRef.current.play().catch(console.warn);
+                          }}
+                          onLoadedMetadata={(e) => {
+                            const dur = (e.target as HTMLVideoElement).duration || 10;
+                            setVideoDuration(dur);
+                            if (videoRef.current && activeHistoryClip) {
+                              videoRef.current.currentTime = activeHistoryClip.videoTime;
+                              if (isPlaying) {
+                                videoRef.current.play().catch(console.warn);
+                              }
                             }
-                          }
-                        }}
-                      />
+                          }}
+                        />
+                        <VideoPlayerControlBar>
+                          <VideoPlayerPlayButton />
+                          <VideoPlayerSeekBackwardButton />
+                          <VideoPlayerSeekForwardButton />
+                          <VideoPlayerTimeRange />
+                          <VideoPlayerTimeDisplay showDuration />
+                          <VideoPlayerMuteButton />
+                          <VideoPlayerVolumeRange />
+                        </VideoPlayerControlBar>
+                      </VideoPlayer>
                     ) : (
                       <div className="text-muted-foreground text-xs flex flex-col items-center gap-2 p-8">
                         <IconVideo className="size-8 text-muted-foreground/50" />
@@ -965,12 +1190,13 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                       </div>
                     )}
 
-
                     {/* Version Badge Overlay */}
-                    <div className="absolute top-3 left-3 bg-background/80 border border-border backdrop-blur rounded-lg px-2.5 py-1 text-xs font-semibold">
+                    <div className="absolute top-3 left-3 bg-background/80 border border-border backdrop-blur rounded-lg px-2.5 py-1 text-xs font-semibold pointer-events-none z-10">
                       Preview: {timeline.message}
                     </div>
                   </div>
+
+
 
                   {/* Video Playback Transport Controls */}
                   <div className="flex flex-col gap-2 pt-1">
@@ -1167,27 +1393,29 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                             {track.track_type}
                           </Badge>
                         </div>
-                        <div className="h-14 bg-background border border-border rounded-xl p-2 relative flex gap-2 overflow-x-auto items-center">
-                          {track.clips.map((clip) => {
-                            const isVideo = track.track_type === 'video';
-                            return (
-                              <div
-                                key={clip.id}
-                                className={cn(
-                                  'h-full flex-1 min-w-[120px] rounded-lg p-2 flex flex-col justify-between text-[11px] border',
-                                  isVideo
-                                    ? 'bg-primary/20 border-primary text-foreground'
-                                    : 'bg-secondary/40 border-border text-foreground'
-                                )}
-                              >
-                                <div className="font-semibold truncate">{clip.name}</div>
-                                <div className="text-[9px] text-muted-foreground font-mono">
-                                  {clip.duration.toFixed(1)}s
+                        <ScrollArea className="w-full pb-1" orientation="horizontal">
+                          <div className="h-14 bg-background border border-border rounded-xl p-2 relative flex gap-2 min-w-full items-center">
+                            {track.clips.map((clip) => {
+                              const isVideo = track.track_type === 'video';
+                              return (
+                                <div
+                                  key={clip.id}
+                                  className={cn(
+                                    'h-full flex-1 min-w-[120px] rounded-lg p-2 flex flex-col justify-between text-[11px] border',
+                                    isVideo
+                                      ? 'bg-primary/20 border-primary text-foreground'
+                                      : 'bg-secondary/40 border-border text-foreground'
+                                  )}
+                                >
+                                  <div className="font-semibold truncate">{clip.name}</div>
+                                  <div className="text-[9px] text-muted-foreground font-mono">
+                                    {clip.duration.toFixed(1)}s
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                              );
+                            })}
+                          </div>
+                        </ScrollArea>
                       </div>
                     ))}
                   </div>
@@ -1226,8 +1454,10 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                 Select a version from the left panel to watch its video preview and inspect its clips.
               </div>
             )}
-          </main>
+            </main>
+          </ScrollArea>
         </SidebarInset>
+
       </div>
     </SidebarProvider>
   );

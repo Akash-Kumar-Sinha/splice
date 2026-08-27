@@ -7,6 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import HistoryPanel, { Commit, Timeline } from './HistoryPanel';
 import TimelineEditor from './TimelineEditor';
+import SyncStatusPill from './SyncStatusPill';
+
 
 interface AppWorkspaceProps {
   initialCommits: Commit[];
@@ -33,9 +35,10 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
   };
 
   const handleOpenVersionInEditor = (tl: Timeline) => {
-    setLoadedTimeline(tl);
+    setLoadedTimeline({ ...tl });
     setActiveTab('editor');
   };
+
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden">
@@ -75,13 +78,18 @@ export default function AppWorkspace({ initialCommits }: AppWorkspaceProps) {
           </Button>
         </div>
 
-        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-          <span>Active Cut:</span>
-          <Badge variant="outline" className="font-mono text-primary font-bold">
-            {headCommitId ? `${headCommitId.slice(0, 8)}...` : 'None'}
-          </Badge>
+        <div className="flex items-center gap-3">
+          <SyncStatusPill />
+          <Separator orientation="vertical" className="h-4" />
+          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+            <span>Active Cut:</span>
+            <Badge variant="outline" className="font-mono text-primary font-bold">
+              {headCommitId ? `${headCommitId.slice(0, 8)}...` : 'None'}
+            </Badge>
+          </div>
         </div>
       </header>
+
 
       {/* Main Content View */}
       <div className="flex-1 overflow-hidden">

@@ -1,6 +1,9 @@
 import AppWorkspace from '@/components/AppWorkspace';
 import { Commit } from '@/components/HistoryPanel';
 
+export const dynamic = 'force-dynamic';
+
+
 async function getCommits(): Promise<Commit[]> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
   try {

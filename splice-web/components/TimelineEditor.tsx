@@ -18,14 +18,40 @@ import {
   IconZoomIn,
   IconScissors,
   IconSparkles,
+  IconDownload,
+  IconFilePlus,
+  IconGitBranch,
 } from '@tabler/icons-react';
+
+
 
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import {
+  Progress,
+  ProgressTrack,
+  ProgressIndicator,
+} from '@/components/ui/progress';
+import {
+  VideoPlayer,
+  VideoPlayerControlBar,
+  VideoPlayerPlayButton,
+  VideoPlayerTimeRange,
+  VideoPlayerTimeDisplay,
+  VideoPlayerMuteButton,
+  VideoPlayerVolumeRange,
+  VideoPlayerSeekBackwardButton,
+  VideoPlayerSeekForwardButton,
+} from '@/components/ui/video_player';
+import { Spinner } from '@/components/ui/spinner';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+
+
+
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -34,7 +60,7 @@ export interface Clip {
   media: string; // MediaHash hex
   in_point: number; // seconds
   out_point: number; // seconds
-  position: number; // seconds start on track
+  position: number; // seconds on the global timeline
   name: string;
   original_duration: number;
 }
@@ -46,6 +72,45 @@ export interface Track {
 
 export interface EditorState {
   tracks: Track[];
+}
+
+export function useUpload() {
+  return (
+    file: File,
+    onProgress?: (percent: number) => void
+  ): Promise<{ hash: string; duration: number }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const form = new FormData();
+      form.append('file', file);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          if (onProgress) onProgress(percent);
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            resolve(data);
+          } catch {
+            reject(new Error('Invalid JSON response from server'));
+          }
+        } else {
+          reject(new Error(`Upload failed with status: ${xhr.statusText || xhr.status}`));
+        }
+      });
+
+      xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+      xhr.open('POST', `${API_URL}/media`);
+      xhr.send(form);
+    });
+  };
 }
 
 // INFO: Recalculates clip positions on the track sequentially
@@ -176,17 +241,6 @@ export function splitClip(
   return { ...state, tracks: newTracks };
 }
 
-export function useUpload() {
-  return async (file: File): Promise<{ hash: string; duration: number }> => {
-    const form = new FormData();
-    form.append('file', file);
-    const res = await fetch(`${API_URL}/media`, { method: 'POST', body: form });
-    if (!res.ok) {
-      throw new Error(`Upload failed: ${res.statusText}`);
-    }
-    return res.json();
-  };
-}
 
 interface TimelineEditorProps {
   headCommitId: string | null;
@@ -218,9 +272,14 @@ export default function TimelineEditor({
     tracks: [{ id: 'track-0', clips: [] }],
   });
 
+  const [activeParentId, setActiveParentId] = useState<string | null>(null);
+  const [activeParentName, setActiveParentName] = useState<string | null>(null);
+
   // Sync loaded version from History panel when user clicks "Open & Edit This Version"
   useEffect(() => {
-    if (loadedTimeline && loadedTimeline.media_refs.length > 0) {
+    if (loadedTimeline) {
+      setActiveParentId(loadedTimeline.commit_id);
+      setActiveParentName(loadedTimeline.message);
       if (loadedTimeline.tracks && loadedTimeline.tracks[0]?.clips?.length > 0) {
         const initialClips: Clip[] = loadedTimeline.tracks[0].clips.map((c, idx) => ({
           id: c.id || `clip-${Date.now()}-${idx}`,
@@ -235,7 +294,7 @@ export default function TimelineEditor({
         setEditorState({
           tracks: [{ id: 'track-0', clips: recalculatePositions(initialClips) }],
         });
-      } else {
+      } else if (loadedTimeline.media_refs && loadedTimeline.media_refs.length > 0) {
         const initialClips: Clip[] = loadedTimeline.media_refs.map((mediaHash, idx) => ({
           id: `clip-${Date.now()}-${idx}`,
           media: mediaHash,
@@ -250,8 +309,27 @@ export default function TimelineEditor({
         });
       }
       setCommitMessage(`Edit based on: ${loadedTimeline.message}`);
+      setSaveStatus(`Loaded version "${loadedTimeline.message}" for editing (Branch mode)`);
     }
   }, [loadedTimeline]);
+
+
+  const handleStartNewProject = () => {
+    setEditorState({ tracks: [{ id: 'track-0', clips: [] }] });
+    setActiveParentId(null);
+    setActiveParentName(null);
+    setCommitMessage('Initial project cut');
+    setPlayhead(0);
+    setIsPlaying(false);
+    setSaveStatus('Started a brand new independent project (Root Tree)');
+  };
+
+  const handleUnlinkParent = () => {
+    setActiveParentId(null);
+    setActiveParentName(null);
+    setSaveStatus('Unlinked: this cut will now save as a brand new independent project');
+  };
+
 
 
   const [playhead, setPlayhead] = useState<number>(0);
@@ -260,7 +338,10 @@ export default function TimelineEditor({
   const [volume, setVolume] = useState<number>(1);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadFileName, setUploadFileName] = useState<string>('');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
   const [commitMessage, setCommitMessage] = useState<string>('Updated video timeline edit');
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
@@ -418,10 +499,15 @@ export default function TimelineEditor({
     if (!files || files.length === 0) return;
     setIsUploading(true);
     setSaveStatus(null);
+    setUploadProgress(0);
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const { hash, duration } = await uploadFn(file);
+        setUploadFileName(file.name);
+        setUploadProgress(0);
+        const { hash, duration } = await uploadFn(file, (percent) => {
+          setUploadProgress(percent);
+        });
         const newClip: Clip = {
           id: `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           media: hash,
@@ -438,8 +524,11 @@ export default function TimelineEditor({
       setSaveStatus('Error uploading media file');
     } finally {
       setIsUploading(false);
+      setUploadProgress(0);
+      setUploadFileName('');
     }
   };
+
 
   // Save / Commit Timeline snapshot
   const handleSaveCommit = async () => {
@@ -459,15 +548,13 @@ export default function TimelineEditor({
       const timelineHash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 
       const commitPayload = {
-        parent: headCommitId,
+        parent: activeParentId,
         author: 'editor@splice.dev',
         message: commitMessage.trim() || 'Saved timeline edit',
         timeline_hash: timelineHash,
         media_refs: mediaRefs,
         timeline_raw: editorState,
       };
-
-
 
       const res = await fetch(`${API_URL}/commits`, {
         method: 'POST',
@@ -480,13 +567,59 @@ export default function TimelineEditor({
       }
 
       const commitId = await res.json();
-      setSaveStatus(`Saved commit ${commitId.slice(0, 8)}! Snapshot persisted.`);
+      setActiveParentId(commitId);
+      setActiveParentName(commitMessage.trim() || 'Saved Version');
+      setSaveStatus(
+        activeParentId
+          ? `Saved next version ${commitId.slice(0, 8)}!`
+          : `Saved as a brand new root project ${commitId.slice(0, 8)}!`
+      );
       if (onCommitSaved) {
         onCommitSaved();
       }
     } catch (err) {
+
       console.error('Error saving commit:', err);
       setSaveStatus('Error saving commit snapshot');
+    }
+  };
+
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+
+  const handleExportVideo = async () => {
+    if (primaryTrack.clips.length === 0) {
+      alert('No video clips on timeline to export.');
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const res = await fetch(`${API_URL}/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeline_raw: editorState }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Export failed' }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `splice_cut_${Date.now()}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setSaveStatus('Export downloaded successfully!');
+    } catch (err: any) {
+      console.error('Export error:', err);
+      alert(`Export failed: ${err.message || err}`);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -494,13 +627,28 @@ export default function TimelineEditor({
     <div className="flex flex-col h-full bg-background text-foreground font-sans">
       {/* Top Controls Header */}
       <div className="border-b border-border bg-card/60 p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <Button
+            onClick={handleStartNewProject}
+            size="sm"
+            variant="outline"
+            className="font-semibold text-xs border-dashed gap-1"
+            title="Start a fresh, standalone video project without branching from previous versions"
+          >
+            <IconFilePlus className="size-3.5 text-primary" />
+            New Project
+          </Button>
+
           <Button
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading}
             size="sm"
           >
-            <IconUpload data-icon="inline-start" />
+            {isUploading ? (
+              <Spinner className="size-3.5 mr-1.5" />
+            ) : (
+              <IconUpload data-icon="inline-start" />
+            )}
             {isUploading ? 'Uploading Media...' : 'Import Video / Audio'}
           </Button>
           <input
@@ -519,15 +667,61 @@ export default function TimelineEditor({
             <IconClock className="size-3 text-muted-foreground" />
             Duration: {totalDuration.toFixed(2)}s
           </Badge>
+
+          {/* Project Lineage Mode Indicator */}
+          {activeParentId === null ? (
+            <Badge
+              variant="outline"
+              className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border-emerald-500/30 gap-1 py-1"
+              title="This cut is an independent standalone project"
+            >
+              <IconSparkles className="size-3" /> New Root Project
+            </Badge>
+          ) : (
+            <div
+              className="flex items-center gap-1.5 bg-muted/40 px-2 py-0.5 rounded-lg border border-border text-[10px] font-mono text-muted-foreground"
+              title="This cut will be saved as a branch/continuation of this parent version"
+            >
+              <IconGitBranch className="size-3 text-primary shrink-0" />
+              <span className="truncate max-w-[130px]">
+                Branch of: {activeParentName || activeParentId.slice(0, 7)}
+              </span>
+              <button
+                onClick={handleUnlinkParent}
+                title="Unlink to create a separate independent root project"
+                className="text-muted-foreground hover:text-foreground font-bold ml-1 text-xs hover:bg-muted p-0.5 rounded"
+              >
+                ✕
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Save / Commit Controls */}
+
+        {/* Save & Export Controls */}
         <div className="flex items-center gap-2">
+          <Button
+            onClick={handleExportVideo}
+            size="sm"
+            variant="outline"
+            disabled={isExporting || primaryTrack.clips.length === 0}
+            className="font-mono text-xs text-foreground font-semibold border-primary/40 hover:bg-primary/10 gap-1.5"
+            title="Render and download the clipped MP4 video to your computer"
+          >
+            {isExporting ? (
+              <Spinner className="size-3.5 text-primary" />
+            ) : (
+              <IconDownload className="size-3.5 text-primary" />
+            )}
+            {isExporting ? 'Rendering MP4...' : 'Download Video'}
+          </Button>
+
+
           <Input
             value={commitMessage}
             onChange={(e) => setCommitMessage(e.target.value)}
             placeholder="Version name / notes..."
-            className="w-64 font-mono text-xs"
+            className="w-56 font-mono text-xs"
           />
           <Button
             variant="outline"
@@ -563,9 +757,8 @@ export default function TimelineEditor({
             Save Project Version
           </Button>
         </div>
-
-
       </div>
+
 
       {saveStatus && (
         <div className="bg-muted/40 border-b border-border px-4 py-2 text-xs font-mono text-primary flex items-center justify-between">
@@ -581,52 +774,68 @@ export default function TimelineEditor({
       )}
 
       {/* Center Layout: Video Preview Player + Drop Zone */}
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 p-6 overflow-y-auto">
-        {/* Left: Video Player Monitor */}
-        <Card className="flex flex-col justify-between p-4 bg-card/40">
-          <div className="flex items-center justify-between pb-3 border-b border-border text-xs font-mono text-muted-foreground">
-            <span className="font-medium text-foreground flex items-center gap-1.5">
-              <IconMovie className="size-3.5" /> Video Monitor Preview
-            </span>
-            <Badge variant="secondary" className="font-mono">
-              {playhead.toFixed(2)}s / {totalDuration.toFixed(2)}s
-            </Badge>
-          </div>
+      <ScrollArea className="flex-1 h-full w-full">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-6 p-6 items-stretch">
+          {/* Left: Video Player Monitor */}
+          <Card className="flex flex-col justify-between p-4 bg-card/40">
+            <div className="flex items-center justify-between pb-3 border-b border-border text-xs font-mono text-muted-foreground">
+              <span className="font-medium text-foreground flex items-center gap-1.5">
+                <IconMovie className="size-3.5" /> Video Monitor Preview
+              </span>
+              <Badge variant="secondary" className="font-mono">
+                {playhead.toFixed(2)}s / {totalDuration.toFixed(2)}s
+              </Badge>
+            </div>
 
-          <div className="relative aspect-video bg-black rounded-xl overflow-hidden my-4 flex items-center justify-center border border-border">
-            {activeClipInfo ? (
-              <video
-                ref={videoRef}
-                src={`${API_URL}/media/${activeClipInfo.clip.media}`}
-                className="w-full h-full object-contain"
-                playsInline
-                preload="auto"
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={() => {
-                  if (videoRef.current) {
-                    videoRef.current.currentTime = activeClipInfo.videoTime;
-                    if (isPlaying) {
-                      videoRef.current.play().catch(console.warn);
-                    }
-                  }
-                }}
-              />
-            ) : (
-              <div className="text-muted-foreground font-mono text-xs text-center p-6 flex flex-col items-center gap-2">
-                <IconVideo className="size-8 text-muted-foreground/50" />
-                No media loaded on timeline.
-                <br />
-                Upload a video to begin editing.
-              </div>
-            )}
+            <div className="relative aspect-video bg-black rounded-xl overflow-hidden my-4 flex items-center justify-center border border-border">
+              {activeClipInfo ? (
+                <VideoPlayer className="w-full h-full rounded-xl overflow-hidden border border-border">
+                  <video
+                    slot="media"
+                    ref={videoRef}
+                    src={`${API_URL}/media/${activeClipInfo.clip.media}`}
+                    className="w-full h-full object-contain"
+                    playsInline
+                    preload="auto"
+                    suppressHydrationWarning
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={() => {
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = activeClipInfo.videoTime;
+                        if (isPlaying) {
+                          videoRef.current.play().catch(console.warn);
+                        }
+                      }
+                    }}
+                  />
+                  <VideoPlayerControlBar>
+                    <VideoPlayerPlayButton />
+                    <VideoPlayerSeekBackwardButton />
+                    <VideoPlayerSeekForwardButton />
+                    <VideoPlayerTimeRange />
+                    <VideoPlayerTimeDisplay showDuration />
+                    <VideoPlayerMuteButton />
+                    <VideoPlayerVolumeRange />
+                  </VideoPlayerControlBar>
+                </VideoPlayer>
+              ) : (
+                <div className="text-muted-foreground font-mono text-xs text-center p-6 flex flex-col items-center gap-2">
+                  <IconVideo className="size-8 text-muted-foreground/50" />
+                  No media loaded on timeline.
+                  <br />
+                  Upload a video to begin editing.
+                </div>
+              )}
 
-            {/* Playhead Overlay Tag */}
-            {activeClipInfo && (
-              <div className="absolute top-2 left-2 bg-background/80 border border-border rounded-lg px-2.5 py-1 text-[11px] font-mono text-foreground backdrop-blur">
-                Clip: {activeClipInfo.clip.name} ({activeClipInfo.offset.toFixed(1)}s)
-              </div>
-            )}
-          </div>
+              {/* Playhead Overlay Tag */}
+              {activeClipInfo && (
+                <div className="absolute top-2 left-2 bg-background/80 border border-border rounded-lg px-2.5 py-1 text-[11px] font-mono text-foreground backdrop-blur pointer-events-none z-10">
+                  Clip: {activeClipInfo.clip.name} ({activeClipInfo.offset.toFixed(1)}s)
+                </div>
+              )}
+            </div>
+
+
 
           {/* Playback Transport Controls + Audio + Split Controls */}
           <div className="flex flex-col gap-3 pt-2">
@@ -725,6 +934,11 @@ export default function TimelineEditor({
           </div>
         </Card>
 
+        {/* Radial Separator Vertical */}
+        <div className="hidden md:flex items-center justify-center px-1">
+          <div className="w-px h-full min-h-[350px] bg-gradient-to-b from-transparent via-border to-transparent [mask-image:radial-gradient(ellipse_at_center,black_50%,transparent_100%)]" />
+        </div>
+
         {/* Right: Drag & Drop Zone + Clip Inspector */}
         <div className="flex flex-col gap-4">
           {/* Dropzone */}
@@ -734,8 +948,11 @@ export default function TimelineEditor({
               e.preventDefault();
               handleFileUpload(e.dataTransfer.files);
             }}
-            onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-border hover:border-primary/80 bg-muted/20 hover:bg-muted/40 rounded-2xl p-8 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-2 min-h-[160px]"
+            onClick={() => !isUploading && fileInputRef.current?.click()}
+            className={cn(
+              "border-2 border-dashed border-border hover:border-primary/80 bg-muted/20 hover:bg-muted/40 rounded-2xl p-6 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-2 min-h-[160px]",
+              isUploading && "pointer-events-none opacity-90"
+            )}
           >
             <IconUpload className="size-8 text-muted-foreground" />
             <div className="text-sm font-medium text-foreground">
@@ -744,7 +961,28 @@ export default function TimelineEditor({
             <div className="text-xs text-muted-foreground font-mono">
               Accepts MP4, WebM, MOV. Files will be hashed via SHA-256 and deduped.
             </div>
+
+            {/* Progress Component Showcase during Upload */}
+            {isUploading && (
+              <div className="w-full max-w-sm mt-3 bg-card border border-primary/40 rounded-xl p-3 flex flex-col gap-2 shadow-md animate-in fade-in-0 duration-150">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <div className="flex items-center gap-2 truncate">
+                    <Spinner className="size-3.5 text-primary shrink-0" />
+                    <span className="font-semibold text-foreground truncate max-w-[200px]">
+                      Uploading {uploadFileName || 'media'}...
+                    </span>
+                  </div>
+                  <span className="text-primary font-bold shrink-0 ml-2">{uploadProgress}%</span>
+                </div>
+                <Progress value={uploadProgress} className="w-full">
+                  <ProgressTrack className="h-2 bg-muted rounded-full overflow-hidden">
+                    <ProgressIndicator className="h-full bg-primary rounded-full transition-all duration-150" />
+                  </ProgressTrack>
+                </Progress>
+              </div>
+            )}
           </div>
+
 
           {/* Quick Clip List */}
           <Card className="flex-1 flex flex-col p-4 bg-card/40">
@@ -753,44 +991,48 @@ export default function TimelineEditor({
                 Track Clips Overview ({primaryTrack.clips.length})
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-0 pt-3 flex flex-col gap-2 overflow-y-auto max-h-56">
-              {primaryTrack.clips.length === 0 ? (
-                <div className="text-xs font-mono text-muted-foreground text-center py-6">
-                  No clips on track yet.
-                </div>
-              ) : (
-                primaryTrack.clips.map((clip, i) => (
-                  <div
-                    key={clip.id}
-                    className="bg-background border border-border rounded-xl p-2.5 flex items-center justify-between text-xs font-mono"
-                  >
-                    <div className="flex items-center gap-2 truncate max-w-[240px]">
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        #{i + 1}
-                      </Badge>
-                      <span className="text-foreground truncate">{clip.name}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-muted-foreground">
-                        {clip.in_point.toFixed(1)}s - {clip.out_point.toFixed(1)}s
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => setEditorState((prev) => removeClip(prev, clip.id))}
-                        className="text-destructive hover:text-destructive"
-                        title="Remove Clip"
-                      >
-                        <IconTrash />
-                      </Button>
-                    </div>
+            <ScrollArea className="max-h-56 w-full pr-1">
+              <CardContent className="p-0 pt-3 flex flex-col gap-2">
+                {primaryTrack.clips.length === 0 ? (
+                  <div className="text-xs font-mono text-muted-foreground text-center py-6">
+                    No clips on track yet.
                   </div>
-                ))
-              )}
-            </CardContent>
+                ) : (
+                  primaryTrack.clips.map((clip, i) => (
+                    <div
+                      key={clip.id}
+                      className="bg-background border border-border rounded-xl p-2.5 flex items-center justify-between text-xs font-mono"
+                    >
+                      <div className="flex items-center gap-2 truncate max-w-[240px]">
+                        <Badge variant="outline" className="font-mono text-[10px]">
+                          #{i + 1}
+                        </Badge>
+                        <span className="text-foreground truncate">{clip.name}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-muted-foreground">
+                          {clip.in_point.toFixed(1)}s - {clip.out_point.toFixed(1)}s
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => setEditorState((prev) => removeClip(prev, clip.id))}
+                          className="text-destructive hover:text-destructive"
+                          title="Remove Clip"
+                        >
+                          <IconTrash />
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </ScrollArea>
           </Card>
         </div>
       </div>
+    </ScrollArea>
+
 
       {/* Bottom Pane: Single Video Track Multi-Clip Editor */}
       <div className="border-t border-border bg-card/90 p-4 flex flex-col gap-3">
@@ -829,123 +1071,126 @@ export default function TimelineEditor({
         </div>
 
         {/* Timeline Scroll Container */}
-        <div className="relative bg-background border border-border rounded-2xl p-3 min-h-[90px] flex items-center overflow-x-auto">
-          {primaryTrack.clips.length === 0 ? (
-            <div className="w-full text-center text-xs font-mono text-muted-foreground py-4">
-              Timeline is empty. Import media above to populate track.
-            </div>
-          ) : (
-            <div
-              style={{ width: zoomLevel === 1 ? '100%' : `${zoomLevel * 100}%` }}
-              className="flex gap-2 min-w-full items-center relative transition-all"
-            >
-              {primaryTrack.clips.map((clip, index) => {
-                const clipDur = clip.out_point - clip.in_point;
-                const widthPercent = totalDuration > 0 ? (clipDur / totalDuration) * 100 : 100;
-                const isActive = activeClipInfo?.clip.id === clip.id;
+        <ScrollArea className="w-full pb-1" orientation="horizontal">
+          <div className="relative bg-background border border-border rounded-2xl p-3 min-h-[90px] flex items-center min-w-full">
+            {primaryTrack.clips.length === 0 ? (
+              <div className="w-full text-center text-xs font-mono text-muted-foreground py-4">
+                Timeline is empty. Import media above to populate track.
+              </div>
+            ) : (
+              <div
+                style={{ width: zoomLevel === 1 ? '100%' : `${zoomLevel * 100}%` }}
+                className="flex gap-2 min-w-full items-center relative transition-all"
+              >
+                {primaryTrack.clips.map((clip, index) => {
+                  const clipDur = clip.out_point - clip.in_point;
+                  const widthPercent = totalDuration > 0 ? (clipDur / totalDuration) * 100 : 100;
+                  const isActive = activeClipInfo?.clip.id === clip.id;
 
-                return (
-                  <div
-                    key={clip.id}
-                    draggable
-                    onDragStart={() => setDraggedIndex(index)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (draggedIndex !== null && draggedIndex !== index) {
-                        setEditorState((prev) => moveClip(prev, draggedIndex, index));
-                        setDraggedIndex(null);
-                      }
-                    }}
-                    style={{ width: `${widthPercent}%`, minWidth: '100px' }}
-                    className={cn(
-                      'group relative h-16 rounded-xl p-2 flex flex-col justify-between select-none cursor-grab active:cursor-grabbing transition-all border-2',
-                      isActive
-                        ? 'bg-primary/20 border-primary shadow-lg shadow-primary/10'
-                        : 'bg-secondary/40 hover:bg-secondary/70 border-border'
-                    )}
-                    onClick={() => handleSeek(clip.position)}
-                  >
-                    {/* Left Trim Handle (In-Point) */}
+                  return (
                     <div
-                      className="absolute left-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-l-lg flex items-center justify-center transition-colors"
-                      title="Trim In-Point"
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                        const startX = e.clientX;
-                        const startIn = clip.in_point;
-                        const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
-                        const elementWidth = rect?.width || 200;
-                        const secondsPerPixel = clipDur / Math.max(1, elementWidth);
-
-                        const onMouseMove = (moveEvent: MouseEvent) => {
-                          const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
-                          setEditorState((prev) =>
-                            trimClip(prev, clip.id, 'in', startIn + deltaSeconds)
-                          );
-                        };
-                        const onMouseUp = () => {
-                          window.removeEventListener('mousemove', onMouseMove);
-                          window.removeEventListener('mouseup', onMouseUp);
-                        };
-                        window.addEventListener('mousemove', onMouseMove);
-                        window.addEventListener('mouseup', onMouseUp);
+                      key={clip.id}
+                      draggable
+                      onDragStart={() => setDraggedIndex(index)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => {
+                        if (draggedIndex !== null && draggedIndex !== index) {
+                          setEditorState((prev) => moveClip(prev, draggedIndex, index));
+                          setDraggedIndex(null);
+                        }
                       }}
+                      style={{ width: `${widthPercent}%`, minWidth: '100px' }}
+                      className={cn(
+                        'group relative h-16 rounded-xl p-2 flex flex-col justify-between select-none cursor-grab active:cursor-grabbing transition-all border-2',
+                        isActive
+                          ? 'bg-primary/20 border-primary shadow-lg shadow-primary/10'
+                          : 'bg-secondary/40 hover:bg-secondary/70 border-border'
+                      )}
+                      onClick={() => handleSeek(clip.position)}
                     >
-                      <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
-                    </div>
+                      {/* Left Trim Handle (In-Point) */}
+                      <div
+                        className="absolute left-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-l-lg flex items-center justify-center transition-colors"
+                        title="Trim In-Point"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          const startX = e.clientX;
+                          const startIn = clip.in_point;
+                          const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
+                          const elementWidth = rect?.width || 200;
+                          const secondsPerPixel = clipDur / Math.max(1, elementWidth);
 
-                    {/* Clip Body Info */}
-                    <div className="px-2 truncate">
-                      <div className="text-xs font-semibold text-foreground truncate font-sans">
-                        {clip.name}
+                          const onMouseMove = (moveEvent: MouseEvent) => {
+                            const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
+                            setEditorState((prev) =>
+                              trimClip(prev, clip.id, 'in', startIn + deltaSeconds)
+                            );
+                          };
+                          const onMouseUp = () => {
+                            window.removeEventListener('mousemove', onMouseMove);
+                            window.removeEventListener('mouseup', onMouseUp);
+                          };
+                          window.addEventListener('mousemove', onMouseMove);
+                          window.addEventListener('mouseup', onMouseUp);
+                        }}
+                      >
+                        <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
                       </div>
-                      <div className="text-[10px] font-mono text-muted-foreground">
-                        {clipDur.toFixed(1)}s (in: {clip.in_point.toFixed(1)}s, out: {clip.out_point.toFixed(1)}s)
+
+                      {/* Clip Body Info */}
+                      <div className="px-2 truncate">
+                        <div className="text-xs font-semibold text-foreground truncate font-sans">
+                          {clip.name}
+                        </div>
+                        <div className="text-[10px] font-mono text-muted-foreground">
+                          {clipDur.toFixed(1)}s (in: {clip.in_point.toFixed(1)}s, out: {clip.out_point.toFixed(1)}s)
+                        </div>
+                      </div>
+
+                      <div className="px-2 flex justify-between items-center text-[9px] font-mono text-muted-foreground">
+                        <span>pos: {clip.position.toFixed(1)}s</span>
+                        <span className="text-primary truncate max-w-[60px]">
+                          {clip.media.slice(0, 6)}
+                        </span>
+                      </div>
+
+                      {/* Right Trim Handle (Out-Point) */}
+                      <div
+                        className="absolute right-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-r-lg flex items-center justify-center transition-colors"
+                        title="Trim Out-Point"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          const startX = e.clientX;
+                          const startOut = clip.out_point;
+                          const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
+                          const elementWidth = rect?.width || 200;
+                          const secondsPerPixel = clipDur / Math.max(1, elementWidth);
+
+                          const onMouseMove = (moveEvent: MouseEvent) => {
+                            const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
+                            setEditorState((prev) =>
+                              trimClip(prev, clip.id, 'out', startOut + deltaSeconds)
+                            );
+                          };
+                          const onMouseUp = () => {
+                            window.removeEventListener('mousemove', onMouseMove);
+                            window.removeEventListener('mouseup', onMouseUp);
+                          };
+                          window.addEventListener('mousemove', onMouseMove);
+                          window.addEventListener('mouseup', onMouseUp);
+                        }}
+                      >
+                        <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
                       </div>
                     </div>
-
-                    <div className="px-2 flex justify-between items-center text-[9px] font-mono text-muted-foreground">
-                      <span>pos: {clip.position.toFixed(1)}s</span>
-                      <span className="text-primary truncate max-w-[60px]">
-                        {clip.media.slice(0, 6)}
-                      </span>
-                    </div>
-
-                    {/* Right Trim Handle (Out-Point) */}
-                    <div
-                      className="absolute right-0 top-0 bottom-0 w-3.5 bg-primary/40 hover:bg-primary cursor-ew-resize rounded-r-lg flex items-center justify-center transition-colors"
-                      title="Trim Out-Point"
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                        const startX = e.clientX;
-                        const startOut = clip.out_point;
-                        const rect = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
-                        const elementWidth = rect?.width || 200;
-                        const secondsPerPixel = clipDur / Math.max(1, elementWidth);
-
-                        const onMouseMove = (moveEvent: MouseEvent) => {
-                          const deltaSeconds = (moveEvent.clientX - startX) * secondsPerPixel;
-                          setEditorState((prev) =>
-                            trimClip(prev, clip.id, 'out', startOut + deltaSeconds)
-                          );
-                        };
-                        const onMouseUp = () => {
-                          window.removeEventListener('mousemove', onMouseMove);
-                          window.removeEventListener('mouseup', onMouseUp);
-                        };
-                        window.addEventListener('mousemove', onMouseMove);
-                        window.addEventListener('mouseup', onMouseUp);
-                      }}
-                    >
-                      <IconGripVertical className="size-2 text-primary-foreground opacity-80" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
       </div>
+
     </div>
   );
 }
