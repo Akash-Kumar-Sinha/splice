@@ -1,0 +1,17 @@
+[package]
+name = "splice-adapter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+splice-commit.workspace = true
+splice-media.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+splice-diff.workspace = true
+splice-sync.workspace = true
+tempfile.workspace = true

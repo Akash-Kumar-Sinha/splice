@@ -1,11 +1,13 @@
 [workspace]
 members = [
+    "crates/splice-adapter",
     "crates/splice-api",
     "crates/splice-commit",
     "crates/splice-diff",
     "crates/splice-gc",
     "crates/splice-media",
     "crates/splice-render",
+    "crates/splice-sdk",
     "crates/splice-sync",
 ]
 resolver = "3"
@@ -16,12 +18,16 @@ edition = "2024"
 authors = ["Akash Kumar Sinha"]
 
 [workspace.dependencies]
-splice-media = { path = "crates/splice-media" }
+splice-adapter = { path = "crates/splice-adapter" }
 splice-commit = { path = "crates/splice-commit" }
 splice-diff = { path = "crates/splice-diff" }
 splice-gc = { path = "crates/splice-gc" }
+splice-media = { path = "crates/splice-media" }
 splice-render = { path = "crates/splice-render" }
+splice-sdk = { path = "crates/splice-sdk" }
 splice-sync = { path = "crates/splice-sync" }
+
+
 
 
 object_store = { version = "0.11", default-features = false, features = ["aws"] }

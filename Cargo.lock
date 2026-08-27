@@ -1627,6 +1627,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
+name = "splice-adapter"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "splice-commit",
+ "splice-diff",
+ "splice-media",
+ "splice-sync",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "splice-api"
 version = "0.1.0"
 dependencies = [
@@ -1635,12 +1649,7 @@ dependencies = [
  "object_store",
  "serde",
  "serde_json",
- "splice-commit",
- "splice-diff",
- "splice-gc",
- "splice-media",
- "splice-render",
- "splice-sync",
+ "splice-sdk",
  "tempfile",
  "thiserror",
  "time",
@@ -1717,6 +1726,27 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "splice-sdk"
+version = "0.1.0"
+dependencies = [
+ "object_store",
+ "serde",
+ "serde_json",
+ "splice-adapter",
+ "splice-commit",
+ "splice-diff",
+ "splice-gc",
+ "splice-media",
+ "splice-render",
+ "splice-sync",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
  "uuid",
 ]
 
