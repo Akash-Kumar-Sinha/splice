@@ -1,6 +1,7 @@
 pub mod commit;
 pub mod error;
 pub mod id;
+pub mod repo;
 pub mod sqlite;
 pub mod squash;
 pub mod store;
@@ -11,9 +12,11 @@ pub mod tree;
 pub use commit::Commit;
 pub use error::StoreError;
 pub use id::CommitId;
+pub use repo::Repository;
 pub use sqlite::SqliteCommitStore;
 pub use squash::squash;
 pub use store::CommitStore;
 pub use tag::Tag;
 pub use timeline::{Clip, Timeline, Track};
 pub use tree::{CommitTreeNode, build_commit_tree};
+

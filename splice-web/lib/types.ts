@@ -1,4 +1,14 @@
+export interface Repository {
+  id: string;
+  name: string;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+  head_commit_id?: string | null;
+}
+
 export interface Commit {
+
   id: string;
   parent: string | null;
   timestamp: string;
@@ -13,8 +23,13 @@ export interface CommitTreeNode {
   commit: Commit;
   tags: string[];
   depth: number;
-  children: CommitTreeNode[];
+  is_branch_root?: boolean;
+  linear_next?: CommitTreeNode | null;
+  branch_children?: CommitTreeNode[];
+  children?: CommitTreeNode[];
 }
+
+
 
 export interface TimelineClip {
   id: string;

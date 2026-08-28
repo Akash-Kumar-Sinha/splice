@@ -21,6 +21,7 @@ export const metadata: Metadata = {
 };
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { RepositoryProvider } from "@/lib/repo-context";
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
@@ -29,9 +30,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={cn("dark h-full", "antialiased", geistSans.variable, geistMono.variable, "font-sans", figtree.variable)}
     >
       <body className="min-h-full flex flex-col">
-        <TooltipProvider>{children}</TooltipProvider>
+        <RepositoryProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+        </RepositoryProvider>
       </body>
     </html>
   );
 }
+
 

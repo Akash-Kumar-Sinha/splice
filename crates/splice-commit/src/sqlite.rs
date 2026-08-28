@@ -11,6 +11,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::commit::Commit;
 use crate::error::StoreError;
 use crate::id::CommitId;
+use crate::repo::Repository;
 use crate::store::CommitStore;
 
 pub struct SqliteCommitStore {
@@ -45,14 +46,23 @@ impl SqliteCommitStore {
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS commits (
+            "CREATE TABLE IF NOT EXISTS repositories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                head_commit_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS commits (
                 id TEXT PRIMARY KEY,
                 parent_id TEXT,
                 timestamp TEXT NOT NULL,
                 author TEXT NOT NULL,
                 message TEXT NOT NULL,
                 timeline_hash TEXT NOT NULL,
-                media_refs TEXT NOT NULL
+                media_refs TEXT NOT NULL,
+                repo_id TEXT
             );
             CREATE TABLE IF NOT EXISTS refs (
                 name TEXT PRIMARY KEY,
@@ -67,8 +77,12 @@ impl SqliteCommitStore {
                 commit_id TEXT PRIMARY KEY REFERENCES commits(id),
                 timeline_json TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_id);",
+            CREATE INDEX IF NOT EXISTS idx_commits_parent ON commits(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_commits_repo ON commits(repo_id);",
         )?;
+
+        // Ensure repo_id column exists if table existed previously without it
+        let _ = conn.execute("ALTER TABLE commits ADD COLUMN repo_id TEXT", []);
 
         Ok(())
     }
@@ -98,31 +112,43 @@ impl SqliteCommitStore {
         let commit_id = CommitId::from_str(&row_id_str)
             .map_err(|e| StoreError::Time(format!("invalid commit id: {e}")))?;
 
-        let parent = match row_parent_str {
-            Some(s) => Some(
-                CommitId::from_str(&s)
-                    .map_err(|e| StoreError::Time(format!("invalid parent commit id: {e}")))?,
+        let parent_id = match row_parent_str {
+            Some(p) => Some(
+                CommitId::from_str(&p)
+                    .map_err(|e| StoreError::Time(format!("invalid parent id: {e}")))?,
             ),
             None => None,
         };
 
         let timestamp = OffsetDateTime::parse(&row_ts_str, &Rfc3339)
-            .map_err(|e| StoreError::Time(e.to_string()))?;
+            .map_err(|e| StoreError::Time(format!("failed to parse timestamp: {e}")))?;
 
         let timeline_hash = MediaHash::from_hex(&timeline_hash_str)
-            .map_err(|e| StoreError::InvalidHash(e.to_string()))?;
+            .map_err(|e| StoreError::Time(format!("invalid timeline hash: {e}")))?;
 
         let media_refs: Vec<MediaHash> = serde_json::from_str(&media_refs_str)?;
 
-        Ok(Commit {
-            id: commit_id,
-            parent,
+        Ok(Commit::new(
+            commit_id,
+            parent_id,
             timestamp,
             author,
             message,
             timeline_hash,
             media_refs,
-        })
+        ))
+    }
+
+    pub fn append(&self, commit: Commit) -> Result<CommitId, StoreError> {
+        <Self as CommitStore>::append(self, commit)
+    }
+
+    pub fn get(&self, id: &CommitId) -> Result<Commit, StoreError> {
+        <Self as CommitStore>::get(self, id)
+    }
+
+    pub fn chain_from_head(&self) -> Result<Vec<Commit>, StoreError> {
+        <Self as CommitStore>::chain_from_head(self)
     }
 
     pub fn head_id(&self) -> Result<Option<CommitId>, StoreError> {
@@ -217,6 +243,30 @@ impl SqliteCommitStore {
 
     pub fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError> {
         <Self as CommitStore>::get_timeline(self, commit_id)
+    }
+
+    pub fn create_repository(&self, repo: Repository) -> Result<Repository, StoreError> {
+        <Self as CommitStore>::create_repository(self, repo)
+    }
+
+    pub fn get_repository(&self, id: &str) -> Result<Option<Repository>, StoreError> {
+        <Self as CommitStore>::get_repository(self, id)
+    }
+
+    pub fn list_repositories(&self) -> Result<Vec<Repository>, StoreError> {
+        <Self as CommitStore>::list_repositories(self)
+    }
+
+    pub fn delete_repository(&self, id: &str) -> Result<(), StoreError> {
+        <Self as CommitStore>::delete_repository(self, id)
+    }
+
+    pub fn append_to_repo(&self, repo_id: &str, commit: Commit) -> Result<CommitId, StoreError> {
+        <Self as CommitStore>::append_to_repo(self, repo_id, commit)
+    }
+
+    pub fn list_commits_for_repo(&self, repo_id: &str) -> Result<Vec<Commit>, StoreError> {
+        <Self as CommitStore>::list_commits_for_repo(self, repo_id)
     }
 }
 
@@ -508,28 +558,354 @@ impl CommitStore for SqliteCommitStore {
             let id_str = id.to_string();
 
             // INFO: Delete related tags, timeline states, and refs if pointing to this commit
-            {
-                let mut del_tags = tx.prepare_cached("DELETE FROM tags WHERE commit_id = ?1")?;
-                del_tags.execute(params![&id_str])?;
-            }
-            {
-                let mut del_timelines =
-                    tx.prepare_cached("DELETE FROM timelines WHERE commit_id = ?1")?;
-                del_timelines.execute(params![&id_str])?;
-            }
-            {
-                let mut del_refs = tx.prepare_cached("DELETE FROM refs WHERE commit_id = ?1")?;
-                del_refs.execute(params![&id_str])?;
-            }
-            {
-                let mut del_commit = tx.prepare_cached("DELETE FROM commits WHERE id = ?1")?;
-                let affected = del_commit.execute(params![&id_str])?;
-                total_deleted += affected;
-            }
+            let mut del_tags = tx.prepare_cached("DELETE FROM tags WHERE commit_id = ?1")?;
+            del_tags.execute(params![&id_str])?;
+
+            let mut del_tl = tx.prepare_cached("DELETE FROM timelines WHERE commit_id = ?1")?;
+            del_tl.execute(params![&id_str])?;
+
+            let mut del_refs = tx.prepare_cached("DELETE FROM refs WHERE commit_id = ?1")?;
+            del_refs.execute(params![&id_str])?;
+
+            let mut del_commit = tx.prepare_cached("DELETE FROM commits WHERE id = ?1")?;
+            let affected = del_commit.execute(params![&id_str])?;
+            total_deleted += affected;
         }
 
         tx.commit()?;
         Ok(total_deleted)
+    }
+
+    fn create_repository(&self, repo: Repository) -> Result<Repository, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let created_at_str = repo
+            .created_at
+            .format(&Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+        let updated_at_str = repo
+            .updated_at
+            .format(&Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+        let head_str = repo.head_commit_id.map(|h| h.to_string());
+
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO repositories (id, name, description, created_at, updated_at, head_commit_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt.execute(params![
+            repo.id,
+            repo.name,
+            repo.description,
+            created_at_str,
+            updated_at_str,
+            head_str,
+        ])?;
+
+        Ok(repo)
+    }
+
+    fn get_repository(&self, id: &str) -> Result<Option<Repository>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, description, created_at, updated_at, head_commit_id
+             FROM repositories
+             WHERE id = ?1",
+        )?;
+        let row = stmt
+            .query_row(params![id], |row| {
+                let id: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let description: Option<String> = row.get(2)?;
+                let created_at_str: String = row.get(3)?;
+                let updated_at_str: String = row.get(4)?;
+                let head_str: Option<String> = row.get(5)?;
+
+                let created_at = OffsetDateTime::parse(&created_at_str, &Rfc3339).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let updated_at = OffsetDateTime::parse(&updated_at_str, &Rfc3339).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let head_commit_id = match head_str {
+                    Some(s) => Some(CommitId::from_str(&s).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?),
+                    None => None,
+                };
+
+                Ok(Repository {
+                    id,
+                    name,
+                    description,
+                    created_at,
+                    updated_at,
+                    head_commit_id,
+                })
+            })
+            .optional()?;
+
+        Ok(row)
+    }
+
+    fn list_repositories(&self) -> Result<Vec<Repository>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, description, created_at, updated_at, head_commit_id
+             FROM repositories
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let description: Option<String> = row.get(2)?;
+            let created_at_str: String = row.get(3)?;
+            let updated_at_str: String = row.get(4)?;
+            let head_str: Option<String> = row.get(5)?;
+
+            let created_at = OffsetDateTime::parse(&created_at_str, &Rfc3339).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let updated_at = OffsetDateTime::parse(&updated_at_str, &Rfc3339).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let head_commit_id = match head_str {
+                Some(s) => Some(CommitId::from_str(&s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
+                None => None,
+            };
+
+            Ok(Repository {
+                id,
+                name,
+                description,
+                created_at,
+                updated_at,
+                head_commit_id,
+            })
+        })?;
+
+        let mut repos = Vec::new();
+        for r in rows {
+            repos.push(r?);
+        }
+        Ok(repos)
+    }
+
+    fn update_repository_head(&self, id: &str, head: &CommitId) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let now_str = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+        let mut stmt = conn.prepare_cached(
+            "UPDATE repositories SET head_commit_id = ?1, updated_at = ?2 WHERE id = ?3",
+        )?;
+        stmt.execute(params![head.to_string(), now_str, id])?;
+        Ok(())
+    }
+
+    fn delete_repository(&self, id: &str) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+
+        // Delete all commits belonging to this repository
+        let commit_ids: Vec<String> = {
+            let mut stmt = tx.prepare_cached("SELECT id FROM commits WHERE repo_id = ?1")?;
+            let rows = stmt.query_map(params![id], |row| row.get(0))?;
+            let mut ids = Vec::new();
+            for r in rows {
+                ids.push(r?);
+            }
+            ids
+        };
+
+        for c_id in &commit_ids {
+            tx.execute("DELETE FROM tags WHERE commit_id = ?1", params![c_id])?;
+            tx.execute("DELETE FROM timelines WHERE commit_id = ?1", params![c_id])?;
+            tx.execute("DELETE FROM refs WHERE commit_id = ?1", params![c_id])?;
+            tx.execute("DELETE FROM commits WHERE id = ?1", params![c_id])?;
+        }
+
+        tx.execute("DELETE FROM repositories WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn append_to_repo(&self, repo_id: &str, commit: Commit) -> Result<CommitId, StoreError> {
+        let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+
+        let id_str = commit.id.to_string();
+
+        {
+            let mut check_dup = tx.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+            let exists = check_dup
+                .query_row(params![&id_str], |_| Ok(true))
+                .optional()?
+                .unwrap_or(false);
+            if exists {
+                return Err(StoreError::DuplicateCommit(commit.id));
+            }
+        }
+
+        if let Some(parent_id) = commit.parent {
+            let parent_id_str = parent_id.to_string();
+            let mut check_parent = tx.prepare_cached("SELECT 1 FROM commits WHERE id = ?1")?;
+            let parent_exists = check_parent
+                .query_row(params![&parent_id_str], |_| Ok(true))
+                .optional()?
+                .unwrap_or(false);
+            if !parent_exists {
+                return Err(StoreError::ParentNotFound(parent_id));
+            }
+        }
+
+        let parent_id_str = commit.parent.map(|p| p.to_string());
+        let ts_str = commit
+            .timestamp
+            .format(&Rfc3339)
+            .map_err(|e| StoreError::Time(e.to_string()))?;
+        let timeline_hash_str = commit.timeline_hash.to_hex();
+        let media_refs_json = serde_json::to_string(&commit.media_refs)?;
+
+        {
+            let mut insert_commit = tx.prepare_cached(
+                "INSERT INTO commits (id, parent_id, timestamp, author, message, timeline_hash, media_refs, repo_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            insert_commit.execute(params![
+                id_str,
+                parent_id_str,
+                ts_str,
+                commit.author,
+                commit.message,
+                timeline_hash_str,
+                media_refs_json,
+                repo_id,
+            ])?;
+        }
+
+        {
+            let mut update_head = tx.prepare_cached(
+                "INSERT INTO refs (name, commit_id)
+                 VALUES ('HEAD', ?1)
+                 ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+            )?;
+            update_head.execute(params![id_str])?;
+        }
+
+        // Update repository updated_at and head_commit_id
+        {
+            let now_str = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .map_err(|e| StoreError::Time(e.to_string()))?;
+            let mut update_repo = tx.prepare_cached(
+                "UPDATE repositories SET head_commit_id = ?1, updated_at = ?2 WHERE id = ?3",
+            )?;
+            let _ = update_repo.execute(params![id_str, now_str, repo_id]);
+        }
+
+        tx.commit()?;
+        Ok(commit.id)
+    }
+
+    fn list_commits_for_repo(&self, repo_id: &str) -> Result<Vec<Commit>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, parent_id, timestamp, author, message, timeline_hash, media_refs
+             FROM commits
+             WHERE repo_id = ?1
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map(params![repo_id], |row| {
+            let id_str: String = row.get(0)?;
+            let parent_str: Option<String> = row.get(1)?;
+            let ts_str: String = row.get(2)?;
+            let author: String = row.get(3)?;
+            let message: String = row.get(4)?;
+            let th_str: String = row.get(5)?;
+            let media_refs_json: String = row.get(6)?;
+
+            let id = CommitId::from_str(&id_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let parent = match parent_str {
+                Some(p) => Some(CommitId::from_str(&p).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
+                None => None,
+            };
+            let timestamp = OffsetDateTime::parse(&ts_str, &Rfc3339).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let timeline_hash = MediaHash::from_hex(&th_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            let media_refs: Vec<MediaHash> =
+                serde_json::from_str(&media_refs_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+
+            Ok(Commit::new(
+                id,
+                parent,
+                timestamp,
+                author,
+                message,
+                timeline_hash,
+                media_refs,
+            ))
+        })?;
+
+        let mut commits = Vec::new();
+        for c in rows {
+            commits.push(c?);
+        }
+        Ok(commits)
     }
 }
 
@@ -564,6 +940,29 @@ mod tests {
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].id, id1);
         assert_eq!(chain[1].id, id0);
+    }
+
+    #[test]
+    fn test_repository_lifecycle() {
+        let store = SqliteCommitStore::open_in_memory().expect("open memory store");
+        let repo = Repository::new("repo_1", "My Project", Some("Test video project".to_string()));
+        let created = store.create_repository(repo).expect("create repo");
+        assert_eq!(created.name, "My Project");
+
+        let repos = store.list_repositories().expect("list repos");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].id, "repo_1");
+
+        let th = MediaHash::compute(b"t1");
+        let commit = Commit::create(None, "Author", "Initial cut", th, vec![]);
+        let c_id = store.append_to_repo("repo_1", commit).expect("append to repo");
+
+        let repo_commits = store.list_commits_for_repo("repo_1").expect("list repo commits");
+        assert_eq!(repo_commits.len(), 1);
+        assert_eq!(repo_commits[0].id, c_id);
+
+        let fetched_repo = store.get_repository("repo_1").expect("get repo").unwrap();
+        assert_eq!(fetched_repo.head_commit_id, Some(c_id));
     }
 
     #[test]

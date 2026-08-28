@@ -27,13 +27,13 @@ import {
 } from '@/lib/editor-state';
 import { useUpload } from '@/hooks/use-upload';
 import { safePlay, safePause } from '@/lib/utils';
-
-
+import { useRepository } from '@/lib/repo-context';
 
 import EditorVideoMonitor from './editor/EditorVideoMonitor';
 import EditorUploadZone from './editor/EditorUploadZone';
 import EditorClipList from './editor/EditorClipList';
 import EditorTimelineTrack from './editor/EditorTimelineTrack';
+
 
 export type { Clip, Track, EditorState } from '@/lib/editor-state';
 export { recalculatePositions, addClip, removeClip, moveClip, trimClip, splitClip } from '@/lib/editor-state';
@@ -68,9 +68,11 @@ export default function TimelineEditor({
   onStartNewProject,
 }: TimelineEditorProps) {
 
+  const { activeRepo } = useRepository();
   const [editorState, setEditorState] = useState<EditorState>({
     tracks: [{ id: 'track-0', clips: [] }],
   });
+
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [activeParentName, setActiveParentName] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -225,11 +227,16 @@ export default function TimelineEditor({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          parent: activeParentId, author: 'aks.krsinha@gmail.com',
+          parent: activeParentId,
+          author: 'aks.krsinha@gmail.com',
           message: commitMessage.trim() || 'Saved timeline edit',
-          timeline_hash: timelineHash, media_refs: mediaRefs, timeline_raw: editorState,
+          timeline_hash: timelineHash,
+          media_refs: mediaRefs,
+          timeline_raw: editorState,
+          repo_id: activeRepo?.id,
         }),
       });
+
       if (!res.ok) throw new Error(`Failed to save: ${res.statusText}`);
       const commitId = await res.json();
       setActiveParentId(commitId);

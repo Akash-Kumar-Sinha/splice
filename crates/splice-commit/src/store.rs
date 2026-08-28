@@ -1,6 +1,7 @@
 use crate::commit::Commit;
 use crate::error::StoreError;
 use crate::id::CommitId;
+use crate::repo::Repository;
 use crate::tag::Tag;
 
 pub trait CommitStore: Send + Sync {
@@ -18,4 +19,13 @@ pub trait CommitStore: Send + Sync {
     fn get_timeline(&self, commit_id: &CommitId) -> Result<Option<String>, StoreError>;
     fn remove_commit(&self, id: &CommitId) -> Result<bool, StoreError>;
     fn remove_commits(&self, ids: &[CommitId]) -> Result<usize, StoreError>;
+
+    // Repository / Project operations
+    fn create_repository(&self, repo: Repository) -> Result<Repository, StoreError>;
+    fn get_repository(&self, id: &str) -> Result<Option<Repository>, StoreError>;
+    fn list_repositories(&self) -> Result<Vec<Repository>, StoreError>;
+    fn update_repository_head(&self, id: &str, head: &CommitId) -> Result<(), StoreError>;
+    fn delete_repository(&self, id: &str) -> Result<(), StoreError>;
+    fn append_to_repo(&self, repo_id: &str, commit: Commit) -> Result<CommitId, StoreError>;
+    fn list_commits_for_repo(&self, repo_id: &str) -> Result<Vec<Commit>, StoreError>;
 }

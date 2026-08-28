@@ -142,20 +142,23 @@ export default function CommitListItem({
           <div className="flex items-center justify-between gap-2">
             {/* Tags */}
             <div className="flex items-center gap-1 flex-wrap min-w-0">
-              {commit.tags && commit.tags.length > 0 ? (
-                commit.tags.map((t) => (
-                  <Badge
-                    key={t}
-                    variant="secondary"
-                    className="text-[8px] px-1.5 py-0 h-3.5 bg-amber-500/10 text-amber-400/80 border-amber-500/20"
-                  >
-                    {t}
-                  </Badge>
-                ))
+              {commit.tags && commit.tags.filter((t) => t !== 'Branch').length > 0 ? (
+                commit.tags
+                  .filter((t) => t !== 'Branch')
+                  .map((t) => (
+                    <Badge
+                      key={t}
+                      variant="secondary"
+                      className="text-[8px] px-1.5 py-0 h-3.5 bg-amber-500/10 text-amber-400/80 border-amber-500/20"
+                    >
+                      {t}
+                    </Badge>
+                  ))
               ) : (
                 <span className="text-[9px] text-muted-foreground/30">No tags</span>
               )}
             </div>
+
 
             {/* Actions */}
             <div className="flex items-center gap-0.5 shrink-0">

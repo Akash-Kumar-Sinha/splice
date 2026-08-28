@@ -60,7 +60,9 @@ async fn test_api_create_and_list_commits() {
         timeline_hash: MediaHash::compute(b"timeline_api_1"),
         media_refs: vec![MediaHash::compute(b"clip_api_1")],
         timeline_raw: None,
+        repo_id: None,
     };
+
 
     let post_req = Request::builder()
         .method("POST")
@@ -218,7 +220,9 @@ async fn test_api_stash_before_revert() {
             timeline_hash: MediaHash::compute(b"dirty timeline state"),
             media_refs: vec![],
             timeline_raw: None,
+            repo_id: None,
         }),
+
     };
 
     let req = Request::builder()
@@ -450,7 +454,9 @@ async fn test_api_save_as_new_version_and_tree_endpoint() {
         timeline_hash: None,
         media_refs: None,
         timeline_raw: None,
+        repo_id: None,
     };
+
 
     let save_as_req = Request::builder()
         .method("POST")
@@ -542,7 +548,9 @@ async fn test_api_sync_status_trigger_and_offline() {
                 timeline_hash: MediaHash::compute(b"offline_tl"),
                 media_refs: vec![],
                 timeline_raw: None,
+                repo_id: None,
             })
+
             .unwrap(),
         ))
         .unwrap();
@@ -614,6 +622,7 @@ async fn test_api_squash_commits() {
                         timeline_hash: MediaHash::compute(b"tl_sq_1"),
                         media_refs: vec![m1],
                         timeline_raw: None,
+                        repo_id: None,
                     })
                     .unwrap(),
                 ))
@@ -639,6 +648,7 @@ async fn test_api_squash_commits() {
                         timeline_hash: MediaHash::compute(b"tl_sq_2"),
                         media_refs: vec![m2],
                         timeline_raw: None,
+                        repo_id: None,
                     })
                     .unwrap(),
                 ))
@@ -664,7 +674,9 @@ async fn test_api_squash_commits() {
                         timeline_hash: MediaHash::compute(b"tl_sq_3"),
                         media_refs: vec![m3],
                         timeline_raw: None,
+                        repo_id: None,
                     })
+
                     .unwrap(),
                 ))
                 .unwrap(),
@@ -742,7 +754,9 @@ async fn test_api_starring_and_preview_stream() {
                         timeline_hash: MediaHash::compute(b"star_tl"),
                         media_refs: vec![ingested_hash],
                         timeline_raw: None,
+                        repo_id: None,
                     })
+
                     .unwrap(),
                 ))
                 .unwrap(),
@@ -972,3 +986,85 @@ async fn test_api_garbage_collection_estimate_and_run() {
     assert!(media_store.contains(&hash_a));
     assert!(!media_store.contains(&hash_b));
 }
+
+#[tokio::test]
+async fn test_api_repository_lifecycle_and_scoped_commits() {
+    let dir = tempdir().expect("tempdir");
+    let media_store = Arc::new(FsMediaStore::init(dir.path().join("media")).expect("media store"));
+    let thumb_cache = FsThumbnailCache::init(dir.path().join("thumbs")).expect("thumb cache");
+    let thumbnailer = Arc::new(FfmpegThumbnailer::new());
+    let commit_store = Arc::new(SqliteCommitStore::open_in_memory().expect("open memory db"));
+    let app = router(commit_store, media_store, thumb_cache, thumbnailer);
+
+    // 1. Create Repository
+    let create_repo_payload = splice_api::CreateRepoRequest {
+        id: Some("proj_alpha".to_string()),
+        name: "Project Alpha".to_string(),
+        description: Some("Commercial Project".to_string()),
+    };
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/repositories")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&create_repo_payload).unwrap()))
+        .unwrap();
+    let create_res = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(create_res.status(), StatusCode::CREATED);
+
+    let repo: splice_sdk::Repository =
+        serde_json::from_slice(&to_bytes(create_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(repo.id, "proj_alpha");
+    assert_eq!(repo.name, "Project Alpha");
+
+    // 2. List Repositories
+    let list_req = Request::builder()
+        .uri("/repositories")
+        .body(Body::empty())
+        .unwrap();
+    let list_res = app.clone().oneshot(list_req).await.unwrap();
+    assert_eq!(list_res.status(), StatusCode::OK);
+    let repos: Vec<splice_sdk::Repository> =
+        serde_json::from_slice(&to_bytes(list_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(repos.len(), 1);
+
+    // 3. Save commit scoped to repo
+    let commit_payload = NewCommitRequest {
+        parent: None,
+        author: "editor".to_string(),
+        message: "Initial cut on Alpha".to_string(),
+        timeline_hash: MediaHash::compute(b"alpha_tl_1"),
+        media_refs: vec![],
+        timeline_raw: None,
+        repo_id: Some("proj_alpha".to_string()),
+    };
+    let commit_req = Request::builder()
+        .method("POST")
+        .uri("/commits")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&commit_payload).unwrap()))
+        .unwrap();
+    let commit_res = app.clone().oneshot(commit_req).await.unwrap();
+    assert_eq!(commit_res.status(), StatusCode::CREATED);
+
+    // 4. Fetch repo commits & tree
+    let repo_commits_req = Request::builder()
+        .uri("/repositories/proj_alpha/commits")
+        .body(Body::empty())
+        .unwrap();
+    let repo_commits_res = app.clone().oneshot(repo_commits_req).await.unwrap();
+    assert_eq!(repo_commits_res.status(), StatusCode::OK);
+    let repo_commits: Vec<CommitResponse> =
+        serde_json::from_slice(&to_bytes(repo_commits_res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(repo_commits.len(), 1);
+    assert_eq!(repo_commits[0].message, "Initial cut on Alpha");
+
+    // 5. Delete repository
+    let del_req = Request::builder()
+        .method("DELETE")
+        .uri("/repositories/proj_alpha")
+        .body(Body::empty())
+        .unwrap();
+    let del_res = app.clone().oneshot(del_req).await.unwrap();
+    assert_eq!(del_res.status(), StatusCode::NO_CONTENT);
+}
+

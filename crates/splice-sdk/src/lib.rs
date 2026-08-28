@@ -14,9 +14,10 @@ pub use splice_adapter::{
     SerializeError, TimelineSerializer,
 };
 pub use splice_commit::{
-    Clip, Commit, CommitId, CommitStore, CommitTreeNode, SqliteCommitStore, StoreError, Tag,
+    Clip, Commit, CommitId, CommitStore, CommitTreeNode, Repository, SqliteCommitStore, StoreError, Tag,
     Timeline, Track, build_commit_tree, squash,
 };
+
 pub use splice_diff::{ClipRef, TimeRange, TimelineDiff, diff};
 pub use splice_gc::{GcError, GcReport, RetentionPolicy, collect_garbage, estimate_reclaimable};
 pub use splice_media::{

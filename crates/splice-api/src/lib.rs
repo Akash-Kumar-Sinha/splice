@@ -18,11 +18,12 @@ use splice_sdk::{
     Commit, CommitId, CommitStore, CommitTreeNode, ExportClip, ExportFormat, ExportJob,
     ExportJobManager, FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, FullResExportRenderer,
     GcReport, JobId, JobStatus, LowResProxyRenderer, MediaHash, MediaStore, ProxyRenderer,
-    RetentionPolicy, S3RemoteStore, StoreError, SyncEngine, SyncError, SyncStatusReport, Tag,
-    ThumbnailGenerator, ThumbnailJob, ThumbnailQueue, Timeline as SpliceCommitTimeline,
-    TimelineDiff, build_commit_tree, collect_garbage, diff, estimate_reclaimable,
-    render_export_mp4, squash,
+    Repository, RetentionPolicy, S3RemoteStore, StoreError, SyncEngine, SyncError,
+    SyncStatusReport, Tag, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
+    Timeline as SpliceCommitTimeline, TimelineDiff, build_commit_tree, collect_garbage, diff,
+    estimate_reclaimable, render_export_mp4, squash,
 };
+
 
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -172,6 +173,8 @@ pub struct NewCommitRequest {
     pub media_refs: Vec<MediaHash>,
     #[serde(default)]
     pub timeline_raw: Option<serde_json::Value>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -186,7 +189,25 @@ pub struct SaveAsRequest {
     pub media_refs: Option<Vec<MediaHash>>,
     #[serde(default)]
     pub timeline_raw: Option<serde_json::Value>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateRepoRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RepoCommitsQuery {
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitResponse {
@@ -331,11 +352,95 @@ pub fn probe_duration(path: &Path) -> f64 {
     }
 }
 
+pub async fn list_repositories_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Repository>>, ApiError> {
+    let repos = state.commit_store.list_repositories()?;
+    Ok(Json(repos))
+}
+
+pub async fn create_repository_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateRepoRequest>,
+) -> Result<(StatusCode, Json<Repository>), ApiError> {
+    let id = payload
+        .id
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("repo_{}", uuid::Uuid::new_v4().simple()));
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("Repository name cannot be empty".to_string()));
+    }
+    let repo = Repository::new(id, name, payload.description);
+    let created = state.commit_store.create_repository(repo)?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub async fn get_repository_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Repository>, ApiError> {
+    let repo = state
+        .commit_store
+        .get_repository(&id)?
+        .ok_or_else(|| ApiError::BadRequest(format!("Repository '{id}' not found")))?;
+    Ok(Json(repo))
+}
+
+pub async fn delete_repository_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    state.commit_store.delete_repository(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_repo_commits_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Vec<CommitResponse>>, ApiError> {
+    let mut commits = state.commit_store.list_commits_for_repo(&id)?;
+    commits.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+    let mut responses = Vec::with_capacity(commits.len());
+
+    for c in commits {
+        let tags = state.commit_store.get_tags(&c.id).unwrap_or_default();
+        responses.push(CommitResponse {
+            id: c.id,
+            parent: c.parent,
+            timestamp: c.timestamp,
+            author: c.author,
+            message: c.message,
+            timeline_hash: c.timeline_hash,
+            media_refs: c.media_refs,
+            tags,
+        });
+    }
+
+    Ok(Json(responses))
+}
+
+pub async fn get_repo_commit_tree_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Vec<CommitTreeNode>>, ApiError> {
+    let commits = state.commit_store.list_commits_for_repo(&id)?;
+    let tree = build_commit_tree(&commits, |cid| {
+        state.commit_store.get_tags(cid).unwrap_or_default()
+    });
+    Ok(Json(tree))
+}
+
 pub async fn list_commits(
     State(state): State<AppState>,
+    Query(query): Query<RepoCommitsQuery>,
 ) -> Result<Json<Vec<CommitResponse>>, ApiError> {
-    // INFO: List all commits across all branches and root trees, sorted newest first
-    let mut commits = state.commit_store.list_all_commits()?;
+    // INFO: List all commits across all branches, or filtered by repository
+    let mut commits = if let Some(ref r_id) = query.repo_id {
+        state.commit_store.list_commits_for_repo(r_id)?
+    } else {
+        state.commit_store.list_all_commits()?
+    };
     commits.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
     let mut responses = Vec::with_capacity(commits.len());
 
@@ -372,7 +477,11 @@ pub async fn create_commit(
     );
 
     // CRITICAL: Outbox pattern: write locally first, then queue for async cloud delivery
-    let id = state.commit_store.append(commit)?;
+    let id = if let Some(ref r_id) = req.repo_id {
+        state.commit_store.append_to_repo(r_id, commit)?
+    } else {
+        state.commit_store.append(commit)?
+    };
 
     if let Some(timeline_raw) = req.timeline_raw {
         let _ = state
@@ -429,7 +538,15 @@ pub async fn save_as_new_version(
         media_refs.clone(),
     );
 
-    let id = state.commit_store.append(commit)?;
+    let id = if let Some(ref r_id) = req.repo_id {
+        state.commit_store.append_to_repo(r_id, commit)?
+    } else {
+        state.commit_store.append(commit)?
+    };
+
+    let _ = state
+        .commit_store
+        .add_tag(Tag::new(id, "Branch".to_string()));
 
     if let Some(timeline_raw) = req.timeline_raw {
         let _ = state
@@ -459,13 +576,19 @@ pub async fn save_as_new_version(
 
 pub async fn get_commit_tree(
     State(state): State<AppState>,
+    Query(query): Query<RepoCommitsQuery>,
 ) -> Result<Json<Vec<CommitTreeNode>>, ApiError> {
-    let all_commits = state.commit_store.list_all_commits()?;
+    let all_commits = if let Some(ref r_id) = query.repo_id {
+        state.commit_store.list_commits_for_repo(r_id)?
+    } else {
+        state.commit_store.list_all_commits()?
+    };
     let tree = build_commit_tree(&all_commits, |id| {
         state.commit_store.get_tags(id).unwrap_or_default()
     });
     Ok(Json(tree))
 }
+
 
 pub async fn get_commits_diff(
     State(state): State<AppState>,
@@ -1208,6 +1331,10 @@ pub fn router_with_state(state: AppState) -> Router {
     let cors = CorsLayer::permissive();
 
     Router::new()
+        .route("/repositories", get(list_repositories_handler).post(create_repository_handler))
+        .route("/repositories/:id", get(get_repository_handler).delete(delete_repository_handler))
+        .route("/repositories/:id/commits", get(list_repo_commits_handler))
+        .route("/repositories/:id/tree", get(get_repo_commit_tree_handler))
         .route("/commits", get(list_commits).post(create_commit))
         .route("/commits/tree", get(get_commit_tree))
         .route("/commits/squash", post(squash_commits))
@@ -1216,7 +1343,6 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/diff", post(compute_timeline_diff))
         .route("/commits/:id/revert", post(revert).get(revert))
         .route("/revert/:id", post(revert).get(revert))
-
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
         .route("/commits/:id/preview.mp4", get(stream_commit_preview))
         .route("/commits/:id/preview", get(stream_commit_preview))
@@ -1244,4 +1370,5 @@ pub fn router_with_state(state: AppState) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024))
         .layer(cors)
         .with_state(state)
+
 }

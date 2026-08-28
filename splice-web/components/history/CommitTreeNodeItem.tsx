@@ -62,7 +62,8 @@ export default function CommitTreeNodeItem({
   const isSelected = selectedCommitId === commit.id;
   const isSelectedForSquash = selectedForSquash.includes(commit.id);
   const isHead = activeHeadId === commit.id;
-  const hasChildren = node.children && node.children.length > 0;
+  const branchChildren = node.branch_children || [];
+  const hasBranchChildren = branchChildren.length > 0;
   const isCollapsed = collapsedNodeIds.has(node.commit.id);
   const hasStarTag =
     node.tags?.includes('Picture Lock') ||
@@ -104,7 +105,7 @@ export default function CommitTreeNodeItem({
             return (
               <div key={i} className="relative" style={{ width: INDENT }}>
                 {showLine && (
-                  <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/60" />
+                  <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/80" />
                 )}
               </div>
             );
@@ -115,18 +116,18 @@ export default function CommitTreeNodeItem({
         {depth > 0 && (
           <div className="relative shrink-0" style={{ width: 14 }}>
             {/* Horizontal line from vertical trunk to node */}
-            <div className="absolute top-[11px] left-0 w-2.5 h-px bg-border/60" />
+            <div className="absolute top-[11px] left-0 w-2.5 h-px bg-border/80" />
             {/* Vertical line extending down (for non-last children) */}
             {!isLast && (
-              <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/60" />
+              <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/80" />
             )}
             {/* Vertical line from parent (top half, connecting to parent's horizontal) */}
-            <div className="absolute left-[10px] top-0 h-[11px] w-px bg-border/60" />
+            <div className="absolute left-[10px] top-0 h-[11px] w-px bg-border/80" />
           </div>
         )}
 
         {/* Collapse toggle or dot */}
-        {hasChildren ? (
+        {hasBranchChildren ? (
           <button
             onClick={(e) => onToggleCollapse(node.commit.id, e)}
             className={cn(
@@ -137,22 +138,22 @@ export default function CommitTreeNodeItem({
             )}
           >
             {isCollapsed ? (
-              <IconChevronDown className="size-2.5" />
-            ) : (
               <IconChevronRight className="size-2.5" />
+            ) : (
+              <IconChevronDown className="size-2.5" />
             )}
           </button>
         ) : (
           <div className="w-4 flex items-center justify-center shrink-0 ml-0.5">
             <div className={cn(
               "size-1.5 rounded-full transition-colors",
-              isSelected ? "bg-primary" : "bg-border/40 group-hover/node:bg-border/60"
+              isSelected ? "bg-primary" : "bg-border/60 group-hover/node:bg-border/90"
             )} />
           </div>
         )}
 
         {/* Tiny thumbnail */}
-        <div className="relative size-7 rounded-lg shrink-0 overflow-hidden bg-black/30 ml-1 border border-border/30">
+        <div className="relative size-7 rounded-lg shrink-0 overflow-hidden bg-black/30 ml-1 border border-border/40">
           <img
             src={`${API_URL}/commits/${commit.id}/thumbnail`}
             alt=""
@@ -178,8 +179,12 @@ export default function CommitTreeNodeItem({
               HEAD
             </Badge>
           )}
-          {node.depth > 0 && (
-            <Badge variant="secondary" className="text-[8px] px-1.5 py-0 h-3.5 shrink-0 leading-none bg-primary/10 text-primary/70 border-0">
+          {node.is_branch_root && node.depth > 0 && (
+            <Badge
+              variant="secondary"
+              className="text-[8px] px-1.5 py-0 h-3.5 shrink-0 leading-none bg-primary/15 text-primary border border-primary/25 flex items-center gap-0.5"
+            >
+              <IconGitBranch className="size-2" />
               b{node.depth}
             </Badge>
           )}
@@ -224,22 +229,24 @@ export default function CommitTreeNodeItem({
       </motion.div>
 
       {/* Tags */}
-      {node.tags && node.tags.length > 0 && (
+      {node.tags && node.tags.filter((t) => t !== 'Branch').length > 0 && (
         <div className="flex items-center gap-1" style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}>
-          {node.tags.map((tag) => (
-            <span
-              key={tag}
-              className="text-[7px] px-1 py-px rounded bg-amber-500/15 text-amber-300/70 leading-none"
-            >
-              {tag}
-            </span>
-          ))}
+          {node.tags
+            .filter((t) => t !== 'Branch')
+            .map((tag) => (
+              <span
+                key={tag}
+                className="text-[7px] px-1 py-px rounded bg-amber-500/15 text-amber-300/70 leading-none"
+              >
+                {tag}
+              </span>
+            ))}
         </div>
       )}
 
-      {/* Children */}
+      {/* 1. Branch Children (Indented directly under this commit) */}
       <AnimatePresence>
-        {hasChildren && !isCollapsed && (
+        {hasBranchChildren && !isCollapsed && (
           <motion.div
             className="flex flex-col"
             initial={{ height: 0, opacity: 0 }}
@@ -247,13 +254,13 @@ export default function CommitTreeNodeItem({
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
           >
-            {node.children.map((child, idx) => (
+            {branchChildren.map((child, idx) => (
               <CommitTreeNodeItem
                 key={child.commit.id}
                 node={child}
                 depth={depth + 1}
-                isLast={idx === node.children.length - 1}
-                parentLines={[...parentLines, !isLast]}
+                isLast={idx === branchChildren.length - 1 && !node.linear_next}
+                parentLines={[...parentLines, !!node.linear_next || idx < branchChildren.length - 1]}
                 selectedCommitId={selectedCommitId}
                 activeHeadId={activeHeadId}
                 selectedForSquash={selectedForSquash}
@@ -275,7 +282,7 @@ export default function CommitTreeNodeItem({
 
       {/* Collapsed indicator */}
       <AnimatePresence>
-        {hasChildren && isCollapsed && (
+        {hasBranchChildren && isCollapsed && (
           <motion.div
             className="flex items-center gap-1.5 py-1 text-[9px] text-muted-foreground/50 font-medium"
             style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}
@@ -284,10 +291,35 @@ export default function CommitTreeNodeItem({
             exit={{ opacity: 0 }}
           >
             <IconGitBranch className="size-2.5 text-primary/50" />
-            <span>+{node.children.length} more</span>
+            <span>+{branchChildren.length} branch{branchChildren.length > 1 ? 'es' : ''}</span>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 2. Linear Progression Next (Continues on the exact same linear track) */}
+      {node.linear_next && (
+        <CommitTreeNodeItem
+          key={node.linear_next.commit.id}
+          node={node.linear_next}
+          depth={depth}
+          isLast={isLast}
+          parentLines={parentLines}
+          selectedCommitId={selectedCommitId}
+          activeHeadId={activeHeadId}
+          selectedForSquash={selectedForSquash}
+          collapsedNodeIds={collapsedNodeIds}
+          isDiffMode={isDiffMode}
+          diffBaseId={diffBaseId}
+          diffTargetId={diffTargetId}
+          onHover={onHover}
+          onSelect={onSelect}
+          onToggleCollapse={onToggleCollapse}
+          onToggleSelectForSquash={onToggleSelectForSquash}
+          onToggleStar={onToggleStar}
+          onSetDiffBaseId={onSetDiffBaseId}
+        />
+      )}
     </motion.div>
   );
 }
+

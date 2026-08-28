@@ -33,6 +33,8 @@ import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Commit, CommitTreeNode, Timeline } from '@/lib/types';
 import { safePlay, safePause, cn } from '@/lib/utils';
+import { useRepository } from '@/lib/repo-context';
+
 
 
 import { API_URL } from '@/lib/api';
@@ -106,13 +108,16 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   };
 
 
-  // Collect all node IDs that have children (for collapse-all)
+  // Collect all node IDs that have branch children (for collapse-all)
   const collectAllParentIds = useCallback((nodes: CommitTreeNode[]): Set<string> => {
     const ids = new Set<string>();
     const walk = (node: CommitTreeNode) => {
-      if (node.children && node.children.length > 0) {
+      if (node.branch_children && node.branch_children.length > 0) {
         ids.add(node.commit.id);
-        node.children.forEach(walk);
+        node.branch_children.forEach(walk);
+      }
+      if (node.linear_next) {
+        walk(node.linear_next);
       }
     };
     nodes.forEach(walk);
@@ -124,9 +129,14 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     const ancestors = new Set<string>();
     const walk = (node: CommitTreeNode): boolean => {
       if (node.commit.id === targetId) return true;
-      for (const child of node.children || []) {
+      for (const child of node.branch_children || []) {
         if (walk(child)) {
           ancestors.add(node.commit.id);
+          return true;
+        }
+      }
+      if (node.linear_next) {
+        if (walk(node.linear_next)) {
           return true;
         }
       }
@@ -136,22 +146,28 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     return ancestors;
   }, []);
 
+
+  const { activeRepo } = useRepository();
+
   const fetchCommits = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/commits`, { cache: 'no-store' });
+      const url = activeRepo?.id ? `${API_URL}/commits?repo_id=${activeRepo.id}` : `${API_URL}/commits`;
+      const res = await fetch(url, { cache: 'no-store' });
       if (res.ok) {
         const data: Commit[] = await res.json();
         setCommits(data);
         if (data.length > 0) setActiveHeadId(data[0].id);
+        else setActiveHeadId(null);
       }
     } catch (err) {
       console.error('Error refreshing commits:', err);
     }
-  }, []);
+  }, [activeRepo?.id]);
 
   const fetchTree = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/commits/tree`, { cache: 'no-store' });
+      const url = activeRepo?.id ? `${API_URL}/commits/tree?repo_id=${activeRepo.id}` : `${API_URL}/commits/tree`;
+      const res = await fetch(url, { cache: 'no-store' });
       if (res.ok) {
         const data: CommitTreeNode[] = await res.json();
         setTreeNodes(data);
@@ -159,15 +175,15 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     } catch (err) {
       console.error('Error fetching tree:', err);
     }
-  }, []);
+  }, [activeRepo?.id]);
 
   const refreshAll = useCallback(async () => {
     await fetchCommits();
     await fetchTree();
   }, [fetchCommits, fetchTree]);
 
-  useEffect(() => { setCommits(initialCommits); }, [initialCommits]);
   useEffect(() => { refreshAll(); }, [refreshAll]);
+
 
   // When tree first loads, collapse everything and expand only the selected node's path
   useEffect(() => {
@@ -802,7 +818,10 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                     await refreshAll();
                     await handleSelectCommit(newId, 'preview');
                   }}
+                  allCommits={commits}
+                  onSelectCommit={(id) => handleSelectCommit(id, 'preview')}
                 />
+
               ) : (
                 <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
                   Select a version from the left panel to watch its video preview.

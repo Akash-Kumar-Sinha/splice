@@ -36,6 +36,10 @@ import { Commit, Timeline, TimelineClip } from "@/lib/types";
 import { API_URL } from "@/lib/api";
 import { cn, safePlay, safePause } from "@/lib/utils";
 
+import { useRepository } from "@/lib/repo-context";
+
+
+
 function formatRelativeDate(timestamp: string): string {
   try {
     const date = new Date(timestamp);
@@ -86,6 +90,8 @@ interface VersionDetailsCardProps {
   onAddTag: (commitId: string, label: string) => void;
   onRemoveTag: (commitId: string, label: string) => void;
   onBranchCreated?: (newCommitId: string) => void;
+  allCommits?: Commit[];
+  onSelectCommit?: (commitId: string) => void;
 }
 
 export default function VersionDetailsCard({
@@ -111,8 +117,14 @@ export default function VersionDetailsCard({
   onAddTag,
   onRemoveTag,
   onBranchCreated,
+  allCommits,
+  onSelectCommit,
 }: VersionDetailsCardProps) {
+  const { activeRepo } = useRepository();
+
+  const parentCommit = allCommits?.find((c) => c.id === selectedCommit?.parent);
   const [showTechDetails, setShowTechDetails] = useState(false);
+
   const [showSaveAsModal, setShowSaveAsModal] = useState(false);
   const [saveAsMessage, setSaveAsMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -131,8 +143,10 @@ export default function VersionDetailsCard({
         body: JSON.stringify({
           from: selectedCommit.id,
           message: saveAsMessage.trim(),
+          repo_id: activeRepo?.id,
         }),
       });
+
       if (res.ok) {
         const newId = await res.json();
         setShowSaveAsModal(false);
@@ -359,6 +373,20 @@ export default function VersionDetailsCard({
             <p className="text-[11px] text-muted-foreground/60 mt-0.5">
               {timeline.author} · {formatRelativeDate(timeline.timestamp)}
             </p>
+
+            {parentCommit && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-2 bg-muted/20 border border-border/40 px-2.5 py-1 rounded-lg w-fit">
+                <IconGitBranch className="size-3.5 text-primary shrink-0" />
+                <span>Branched from:</span>
+                <button
+                  onClick={() => onSelectCommit?.(parentCommit.id)}
+                  className="text-foreground font-semibold hover:text-primary hover:underline transition-colors"
+                  title={`View parent origin version: ${parentCommit.message}`}
+                >
+                  &ldquo;{parentCommit.message}&rdquo;
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -412,10 +440,15 @@ export default function VersionDetailsCard({
         {showSaveAsModal && (
           <div className="p-3 bg-muted/30 border border-border/60 rounded-xl flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
-                <IconGitBranch className="size-3 text-primary" />
-                Create Branch
-              </span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
+                  <IconGitBranch className="size-3 text-primary" />
+                  Create Branch from &ldquo;{timeline.message}&rdquo;
+                </span>
+                <span className="text-[10px] text-muted-foreground/60">
+                  Creates an independent fork starting directly from this version
+                </span>
+              </div>
               <button
                 onClick={() => setShowSaveAsModal(false)}
                 className="text-muted-foreground hover:text-foreground text-xs"
@@ -427,7 +460,7 @@ export default function VersionDetailsCard({
               <Input
                 value={saveAsMessage}
                 onChange={(e) => setSaveAsMessage(e.target.value)}
-                placeholder="Branch name..."
+                placeholder="e.g. Color Graded Version, Alternate Cut..."
                 className="h-7 text-[11px] flex-1"
                 autoFocus
                 onKeyDown={(e) => {
@@ -435,6 +468,7 @@ export default function VersionDetailsCard({
                   if (e.key === "Escape") setShowSaveAsModal(false);
                 }}
               />
+
               <Button
                 onClick={handleSaveAsNewVersion}
                 size="sm"
@@ -451,28 +485,31 @@ export default function VersionDetailsCard({
         <div className="flex items-center gap-2 py-2">
           <IconTag className="size-3.5 text-muted-foreground/40 shrink-0" />
           <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
-            {selectedCommit?.tags && selectedCommit.tags.length > 0 ? (
-              selectedCommit.tags.map((tag) => (
-                <Badge
-                  key={tag}
-                  variant="secondary"
-                  className="text-[10px] gap-1.5 bg-amber-500/10 text-amber-400/80 border-amber-500/20 h-5 px-2"
-                >
-                  {tag}
-                  <button
-                    onClick={() => onRemoveTag(timeline.commit_id, tag)}
-                    className="text-amber-400/30 hover:text-red-400 ml-0.5 transition-colors"
+            {selectedCommit?.tags && selectedCommit.tags.filter((t) => t !== 'Branch').length > 0 ? (
+              selectedCommit.tags
+                .filter((tag) => tag !== 'Branch')
+                .map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="secondary"
+                    className="text-[10px] gap-1.5 bg-amber-500/10 text-amber-400/80 border-amber-500/20 h-5 px-2"
                   >
-                    ✕
-                  </button>
-                </Badge>
-              ))
+                    {tag}
+                    <button
+                      onClick={() => onRemoveTag(timeline.commit_id, tag)}
+                      className="text-amber-400/30 hover:text-red-400 ml-0.5 transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </Badge>
+                ))
             ) : (
               <span className="text-[10px] text-muted-foreground/40">
                 No tags
               </span>
             )}
           </div>
+
 
           <div className="flex items-center gap-1 shrink-0">
             <Button

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import SyncStatusPill from './SyncStatusPill';
 import { Logo } from '@/components/logo/logo';
 import { cn } from '@/lib/utils';
+import RepositorySelector from './RepositorySelector';
 
 interface AppHeaderProps {
   headCommitId?: string | null;
@@ -19,13 +20,20 @@ export default function AppHeader({ headCommitId: _headCommitId, commitCount, on
 
   return (
     <header className="h-11 bg-card/60 border-b border-border/60 px-4 flex items-center justify-between shrink-0 backdrop-blur-sm relative z-30">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         <Link href="/" className="flex items-center gap-1.5 hover:opacity-80 transition-opacity">
           <Logo />
           <span className="font-bold text-[13px] tracking-tight text-foreground">
             Splice
           </span>
         </Link>
+
+        <span className="text-border text-xs">/</span>
+
+        <RepositorySelector />
+
+        <div className="h-4 w-px bg-border/60 mx-1" />
+
 
         <nav className="flex items-center gap-0.5">
           {[
