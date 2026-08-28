@@ -9,14 +9,14 @@ use splice_api::{
     CommitResponse, NewCommitRequest, RevertMode, RevertPayload, TagRequest, Timeline,
     UploadResponse, router,
 };
-use splice_commit::{CommitId, CommitStore, SqliteCommitStore, Tag};
-use splice_media::{FsMediaStore, MediaHash, MediaStore};
-
-use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
+use splice_sdk::{
+    Commit, CommitId, CommitStore, CommitTreeNode, ExportFormat, ExportJob, FfmpegThumbnailer,
+    FsMediaStore, FsThumbnailCache, GcReport, MediaHash, MediaStore, S3RemoteStore,
+    SqliteCommitStore, SyncEngine, SyncState, SyncStatusReport, Tag, TimelineDiff,
+};
 use tempfile::tempdir;
 use time::OffsetDateTime;
 use tower::ServiceExt;
-
 
 #[tokio::test]
 async fn test_api_empty_commits() {
@@ -384,7 +384,7 @@ async fn test_api_diff_between_commits() {
     let hash1 = MediaHash::compute(b"clip_1");
     let hash2 = MediaHash::compute(b"clip_2");
 
-    let commit_a = splice_commit::Commit::create(
+    let commit_a = Commit::create(
         None,
         "editor",
         "Base commit with clip 1",
@@ -393,7 +393,7 @@ async fn test_api_diff_between_commits() {
     );
     let id_a = store_raw.append(commit_a).expect("append a");
 
-    let commit_b = splice_commit::Commit::create(
+    let commit_b = Commit::create(
         Some(id_a),
         "editor",
         "Added clip 2 and kept clip 1",
@@ -415,8 +415,7 @@ async fn test_api_diff_between_commits() {
     assert_eq!(diff_res.status(), StatusCode::OK);
 
     let body = to_bytes(diff_res.into_body(), usize::MAX).await.unwrap();
-    let diff_result: splice_diff::TimelineDiff =
-        serde_json::from_slice(&body).expect("parse diff json");
+    let diff_result: TimelineDiff = serde_json::from_slice(&body).expect("parse diff json");
 
     assert_eq!(diff_result.added.len(), 1);
     assert_eq!(diff_result.removed.len(), 0);
@@ -431,7 +430,7 @@ async fn test_api_save_as_new_version_and_tree_endpoint() {
     let thumbnailer = Arc::new(FfmpegThumbnailer::new());
     let store_raw = SqliteCommitStore::open_in_memory().expect("open memory db");
 
-    let root_commit = splice_commit::Commit::create(
+    let root_commit = Commit::create(
         None,
         "director",
         "Root v1.0",
@@ -464,8 +463,7 @@ async fn test_api_save_as_new_version_and_tree_endpoint() {
     assert_eq!(save_as_res.status(), StatusCode::CREATED);
 
     let save_as_body = to_bytes(save_as_res.into_body(), usize::MAX).await.unwrap();
-    let new_branch_id: splice_commit::CommitId =
-        serde_json::from_slice(&save_as_body).expect("parse id");
+    let new_branch_id: CommitId = serde_json::from_slice(&save_as_body).expect("parse id");
 
     // Fetch tree
     let tree_req = Request::builder()
@@ -478,8 +476,7 @@ async fn test_api_save_as_new_version_and_tree_endpoint() {
     assert_eq!(tree_res.status(), StatusCode::OK);
 
     let tree_body = to_bytes(tree_res.into_body(), usize::MAX).await.unwrap();
-    let tree: Vec<splice_commit::CommitTreeNode> =
-        serde_json::from_slice(&tree_body).expect("parse tree");
+    let tree: Vec<CommitTreeNode> = serde_json::from_slice(&tree_body).expect("parse tree");
 
     assert_eq!(tree.len(), 1);
     assert_eq!(tree[0].commit.id, root_id);
@@ -496,9 +493,8 @@ async fn test_api_sync_status_trigger_and_offline() {
     let commit_store = Arc::new(SqliteCommitStore::open_in_memory().expect("open memory db"));
 
     let mem_store = Arc::new(object_store::memory::InMemory::new());
-    let remote_store = Arc::new(splice_sync::S3RemoteStore::new(mem_store));
-    let sync_engine =
-        splice_sync::SyncEngine::new(remote_store, commit_store.clone(), "s3://test-bucket");
+    let remote_store = Arc::new(S3RemoteStore::new(mem_store));
+    let sync_engine = SyncEngine::new(remote_store, commit_store.clone(), "s3://test-bucket");
 
     let app = splice_api::router_with_sync(
         commit_store,
@@ -517,8 +513,8 @@ async fn test_api_sync_status_trigger_and_offline() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    let status: splice_sync::SyncStatusReport = serde_json::from_slice(&body).unwrap();
-    assert_eq!(status.state, splice_sync::SyncState::Synced);
+    let status: SyncStatusReport = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status.state, SyncState::Synced);
     assert_eq!(status.pending_count, 0);
 
     // 2. Set offline
@@ -561,8 +557,8 @@ async fn test_api_sync_status_trigger_and_offline() {
         .unwrap();
     let res2 = app.clone().oneshot(req2).await.unwrap();
     let body2 = to_bytes(res2.into_body(), usize::MAX).await.unwrap();
-    let status2: splice_sync::SyncStatusReport = serde_json::from_slice(&body2).unwrap();
-    assert_eq!(status2.state, splice_sync::SyncState::Offline);
+    let status2: SyncStatusReport = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(status2.state, SyncState::Offline);
     assert_eq!(status2.pending_count, 1);
 
     // 5. Back online and trigger sync
@@ -586,7 +582,7 @@ async fn test_api_sync_status_trigger_and_offline() {
     let trig_body = to_bytes(trig_res.into_body(), usize::MAX).await.unwrap();
     let trig_data: splice_api::SyncTriggerResponse = serde_json::from_slice(&trig_body).unwrap();
     assert_eq!(trig_data.drained_count, 1);
-    assert_eq!(trig_data.status.state, splice_sync::SyncState::Synced);
+    assert_eq!(trig_data.status.state, SyncState::Synced);
 }
 
 #[tokio::test]
@@ -804,7 +800,7 @@ async fn test_api_full_res_export_job_and_download() {
     f.write_all(b"TEST_EXPORT_VIDEO_SAMPLE").unwrap();
     let sample_hash = media_store.ingest(&sample_file).unwrap();
 
-    let commit = splice_commit::Commit::create(
+    let commit = Commit::create(
         None,
         "editor".to_string(),
         "Master Cut".to_string(),
@@ -819,7 +815,7 @@ async fn test_api_full_res_export_job_and_download() {
     // 1. Submit export job
     let export_payload = splice_api::ExportRequest {
         commit_id: Some(commit_id),
-        format: Some(splice_render::ExportFormat::H264),
+        format: Some(ExportFormat::H264),
         resolution: Some("1080p".to_string()),
         timeline_raw: None,
     };
@@ -834,7 +830,7 @@ async fn test_api_full_res_export_job_and_download() {
     let post_export_res = app.clone().oneshot(post_export_req).await.unwrap();
     assert_eq!(post_export_res.status(), StatusCode::OK);
 
-    let export_job: splice_render::ExportJob = serde_json::from_slice(
+    let export_job: ExportJob = serde_json::from_slice(
         &to_bytes(post_export_res.into_body(), usize::MAX)
             .await
             .unwrap(),
@@ -854,12 +850,9 @@ async fn test_api_full_res_export_job_and_download() {
     let status_res = app.clone().oneshot(get_status_req).await.unwrap();
     assert_eq!(status_res.status(), StatusCode::OK);
 
-    let status_job: splice_render::ExportJob = serde_json::from_slice(
-        &to_bytes(status_res.into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let status_job: ExportJob =
+        serde_json::from_slice(&to_bytes(status_res.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
     assert_eq!(status_job.id, job_id);
 
     // 3. Download export
@@ -911,7 +904,7 @@ async fn test_api_garbage_collection_estimate_and_run() {
     let hash_b = media_store.ingest(&file_b).unwrap();
 
     // Active recent commit
-    let recent = splice_commit::Commit::create(
+    let recent = Commit::create(
         None,
         "editor".to_string(),
         "Active Save".to_string(),
@@ -922,7 +915,7 @@ async fn test_api_garbage_collection_estimate_and_run() {
     store_raw.set_head(&recent_id).unwrap();
 
     // Stale detached commit (60 days old)
-    let mut stale = splice_commit::Commit::create(
+    let mut stale = Commit::create(
         None,
         "editor".to_string(),
         "Stale Temporary Save".to_string(),
@@ -930,7 +923,7 @@ async fn test_api_garbage_collection_estimate_and_run() {
         vec![hash_b],
     );
     stale.timestamp = OffsetDateTime::now_utc() - time::Duration::days(60);
-    let stale_id = store_raw.append(stale).unwrap();
+    let _stale_id = store_raw.append(stale).unwrap();
     store_raw.set_head(&recent_id).unwrap();
 
     let commit_store = Arc::new(store_raw);
@@ -946,12 +939,8 @@ async fn test_api_garbage_collection_estimate_and_run() {
     let est_res = app.clone().oneshot(est_req).await.unwrap();
     assert_eq!(est_res.status(), StatusCode::OK);
 
-    let est_report: splice_gc::GcReport = serde_json::from_slice(
-        &to_bytes(est_res.into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let est_report: GcReport =
+        serde_json::from_slice(&to_bytes(est_res.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(est_report.commits_scanned, 2);
     assert_eq!(est_report.commits_retained, 1);
     assert_eq!(est_report.commits_pruned, 1);
@@ -973,18 +962,13 @@ async fn test_api_garbage_collection_estimate_and_run() {
     let gc_res = app.oneshot(gc_req).await.unwrap();
     assert_eq!(gc_res.status(), StatusCode::OK);
 
-    let gc_report: splice_gc::GcReport = serde_json::from_slice(
-        &to_bytes(gc_res.into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let gc_report: GcReport =
+        serde_json::from_slice(&to_bytes(gc_res.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(gc_report.commits_pruned, 1);
     assert_eq!(gc_report.media_pruned, 1);
+
     assert!(!gc_report.dry_run);
 
     assert!(media_store.contains(&hash_a));
     assert!(!media_store.contains(&hash_b));
 }
-
-

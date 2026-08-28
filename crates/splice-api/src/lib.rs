@@ -14,15 +14,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use splice_commit::{Commit, CommitId, CommitStore, CommitTreeNode, StoreError, Tag};
-use splice_diff::TimelineDiff;
-use splice_media::{MediaHash, MediaStore};
-use splice_render::{
-    FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, FullResExportRenderer,
-    LowResProxyRenderer, ProxyRenderer, ThumbnailGenerator, ThumbnailJob, ThumbnailQueue,
+use splice_sdk::{
+    Commit, CommitId, CommitStore, CommitTreeNode, ExportClip, ExportFormat, ExportJob,
+    ExportJobManager, FfmpegThumbnailer, FsProxyCache, FsThumbnailCache, FullResExportRenderer,
+    GcReport, JobId, JobStatus, LowResProxyRenderer, MediaHash, MediaStore, ProxyRenderer,
+    RetentionPolicy, S3RemoteStore, StoreError, SyncEngine, SyncError, SyncStatusReport, Tag,
+    ThumbnailGenerator, ThumbnailJob, ThumbnailQueue, Timeline as SpliceCommitTimeline,
+    TimelineDiff, build_commit_tree, collect_garbage, diff, estimate_reclaimable,
+    render_export_mp4, squash,
 };
-
-use splice_sync::{S3RemoteStore, SyncEngine, SyncError, SyncStatusReport};
 
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -30,14 +30,20 @@ use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
+pub use splice_sdk::{
+    ExportFormat as SdkExportFormat, ExportJob as SdkExportJob,
+    ExportJobManager as SdkExportJobManager, GcError as SdkGcError, GcReport as SdkGcReport,
+    GenericSerializer as SdkGenericSerializer, JobId as SdkJobId, JobStatus as SdkJobStatus,
+    ResolveItem as SdkResolveItem, ResolveProject as SdkResolveProject,
+    ResolveSerializer as SdkResolveSerializer, ResolveTrack as SdkResolveTrack,
+    RetentionPolicy as SdkRetentionPolicy, SerializeError as SdkSerializeError,
+    TimelineSerializer as SdkTimelineSerializer, collect_garbage as sdk_collect_garbage,
+    estimate_reclaimable as sdk_estimate_reclaimable,
+};
 pub use timeline::{
     RawEditorClip, RawEditorState, RawEditorTrack, RevertMode, Timeline, TimelineClip,
     TimelineTrack,
 };
-
-pub use splice_render::{ExportFormat, ExportJob, ExportJobManager, JobId, JobStatus};
-pub use splice_gc::{GcError, GcReport, RetentionPolicy, collect_garbage, estimate_reclaimable};
-
 
 #[derive(Clone)]
 pub struct AppState {
@@ -128,7 +134,7 @@ impl AppState {
         }
     }
 
-
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_everything(
         commit_store: Arc<dyn CommitStore>,
         media_store: Arc<dyn MediaStore>,
@@ -155,8 +161,6 @@ impl AppState {
         }
     }
 }
-
-
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct NewCommitRequest {
@@ -218,8 +222,8 @@ pub struct DiffQuery {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DiffTimelinePayload {
-    pub timeline_a: splice_commit::Timeline,
-    pub timeline_b: splice_commit::Timeline,
+    pub timeline_a: SpliceCommitTimeline,
+    pub timeline_b: SpliceCommitTimeline,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,7 +249,6 @@ pub struct SquashRequest {
     pub message: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncTriggerResponse {
     pub success: bool,
@@ -259,7 +262,7 @@ pub enum ApiError {
     Store(#[from] StoreError),
 
     #[error("Media store error: {0}")]
-    Media(#[from] splice_media::StoreError),
+    Media(#[from] splice_sdk::MediaStoreError),
 
     #[error("Media not found: {0}")]
     MediaNotFound(MediaHash),
@@ -271,11 +274,10 @@ pub enum ApiError {
     JobNotFound(JobId),
 
     #[error("Render error: {0}")]
-    Render(#[from] splice_render::RenderError),
-
+    Render(#[from] splice_sdk::RenderError),
 
     #[error("GC error: {0}")]
-    Gc(#[from] splice_gc::GcError),
+    Gc(#[from] splice_sdk::GcError),
 
     #[error("Sync error: {0}")]
     Sync(#[from] SyncError),
@@ -334,7 +336,7 @@ pub async fn list_commits(
 ) -> Result<Json<Vec<CommitResponse>>, ApiError> {
     // INFO: List all commits across all branches and root trees, sorted newest first
     let mut commits = state.commit_store.list_all_commits()?;
-    commits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    commits.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
     let mut responses = Vec::with_capacity(commits.len());
 
     for c in commits {
@@ -353,7 +355,6 @@ pub async fn list_commits(
 
     Ok(Json(responses))
 }
-
 
 pub async fn create_commit(
     State(state): State<AppState>,
@@ -416,7 +417,7 @@ pub async fn save_as_new_version(
     let media_refs = req.media_refs.unwrap_or(parent_commit.media_refs);
     let author = req
         .author
-        .unwrap_or_else(|| "editor@splice.dev".to_string());
+        .unwrap_or_else(|| "aks.krsinha@gmail.com".to_string());
 
     let commit = Commit::new(
         new_id,
@@ -460,7 +461,7 @@ pub async fn get_commit_tree(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CommitTreeNode>>, ApiError> {
     let all_commits = state.commit_store.list_all_commits()?;
-    let tree = splice_commit::build_commit_tree(&all_commits, |id| {
+    let tree = build_commit_tree(&all_commits, |id| {
         state.commit_store.get_tags(id).unwrap_or_default()
     });
     Ok(Json(tree))
@@ -478,10 +479,10 @@ pub async fn get_commits_diff(
             Timeline::from_raw_state(&commit_a, &raw_state, RevertMode::Preview, false)
                 .to_splice_commit_timeline()
         } else {
-            splice_commit::Timeline::from_commit(&commit_a)
+            SpliceCommitTimeline::from_commit(&commit_a)
         }
     } else {
-        splice_commit::Timeline::from_commit(&commit_a)
+        SpliceCommitTimeline::from_commit(&commit_a)
     };
 
     let tl_b = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&query.to) {
@@ -489,21 +490,21 @@ pub async fn get_commits_diff(
             Timeline::from_raw_state(&commit_b, &raw_state, RevertMode::Preview, false)
                 .to_splice_commit_timeline()
         } else {
-            splice_commit::Timeline::from_commit(&commit_b)
+            SpliceCommitTimeline::from_commit(&commit_b)
         }
     } else {
-        splice_commit::Timeline::from_commit(&commit_b)
+        SpliceCommitTimeline::from_commit(&commit_b)
     };
 
-    let diff = splice_diff::diff(&tl_a, &tl_b);
-    Ok(Json(diff))
+    let diff_res = diff(&tl_a, &tl_b);
+    Ok(Json(diff_res))
 }
 
 pub async fn compute_timeline_diff(
     Json(payload): Json<DiffTimelinePayload>,
 ) -> Result<Json<TimelineDiff>, ApiError> {
-    let diff = splice_diff::diff(&payload.timeline_a, &payload.timeline_b);
-    Ok(Json(diff))
+    let diff_res = diff(&payload.timeline_a, &payload.timeline_b);
+    Ok(Json(diff_res))
 }
 
 pub async fn revert(
@@ -703,25 +704,22 @@ pub async fn add_commit_tag(
     state.commit_store.add_tag(Tag::new(id, label))?;
 
     // CRITICAL: On starring a commit, kick off low-res proxy render job in background
-    if label.eq_ignore_ascii_case("starred") || label.eq_ignore_ascii_case("star") {
-        if let Ok(commit) = state.commit_store.get(&id) {
-            let timeline = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
-                if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
-                    Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false)
-                        .to_splice_commit_timeline()
-                } else {
-                    splice_commit::Timeline::from_commit(&commit)
-                }
-            } else {
-                splice_commit::Timeline::from_commit(&commit)
-            };
-            state.proxy_cache.kick_off_background_render(timeline);
-        }
+    if (label.eq_ignore_ascii_case("starred") || label.eq_ignore_ascii_case("star"))
+        && let Ok(commit) = state.commit_store.get(&id)
+    {
+        let timeline = if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id)
+            && let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json)
+        {
+            Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false)
+                .to_splice_commit_timeline()
+        } else {
+            SpliceCommitTimeline::from_commit(&commit)
+        };
+        state.proxy_cache.kick_off_background_render(timeline);
     }
 
     Ok(StatusCode::CREATED)
 }
-
 
 pub async fn remove_commit_tag(
     State(state): State<AppState>,
@@ -801,20 +799,20 @@ fn reconstruct_timeline_for_export(
     state: &AppState,
     commit_id: Option<CommitId>,
     raw_timeline: Option<serde_json::Value>,
-) -> Result<(CommitId, splice_commit::Timeline), ApiError> {
-    if let Some(raw) = raw_timeline {
-        if let Ok(raw_state) = serde_json::from_value::<timeline::RawEditorState>(raw) {
-            let cid = commit_id.unwrap_or_else(CommitId::new);
-            let dummy_commit = Commit::create(
-                None,
-                "editor".to_string(),
-                "Export composition".to_string(),
-                MediaHash::compute(b"export"),
-                vec![],
-            );
-            let tl = Timeline::from_raw_state(&dummy_commit, &raw_state, RevertMode::Preview, false);
-            return Ok((cid, tl.to_splice_commit_timeline()));
-        }
+) -> Result<(CommitId, SpliceCommitTimeline), ApiError> {
+    if let Some(raw) = raw_timeline
+        && let Ok(raw_state) = serde_json::from_value::<timeline::RawEditorState>(raw)
+    {
+        let cid = commit_id.unwrap_or_default();
+        let dummy_commit = Commit::create(
+            None,
+            "editor".to_string(),
+            "Export composition".to_string(),
+            MediaHash::compute(b"export"),
+            vec![],
+        );
+        let tl = Timeline::from_raw_state(&dummy_commit, &raw_state, RevertMode::Preview, false);
+        return Ok((cid, tl.to_splice_commit_timeline()));
     }
 
     let id = commit_id.ok_or_else(|| {
@@ -823,17 +821,21 @@ fn reconstruct_timeline_for_export(
 
     let commit = state.commit_store.get(&id)?;
 
-    if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id) {
-        if let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json) {
-            let tl = Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false);
-            return Ok((id, tl.to_splice_commit_timeline()));
-        }
+    if let Ok(Some(raw_json)) = state.commit_store.get_timeline(&id)
+        && let Ok(raw_state) = serde_json::from_str::<timeline::RawEditorState>(&raw_json)
+    {
+        let tl = Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false);
+        return Ok((id, tl.to_splice_commit_timeline()));
     }
 
-    let tl = Timeline::reconstruct(&commit, RevertMode::Preview, false, Some(state.media_store.as_ref()));
+    let tl = Timeline::reconstruct(
+        &commit,
+        RevertMode::Preview,
+        false,
+        Some(state.media_store.as_ref()),
+    );
     Ok((id, tl.to_splice_commit_timeline()))
 }
-
 
 pub async fn start_export_commit(
     State(state): State<AppState>,
@@ -843,10 +845,7 @@ pub async fn start_export_commit(
     let req = req.map(|r| r.0).unwrap_or_default();
     let format = req.format.unwrap_or_default();
     let (cid, timeline) = reconstruct_timeline_for_export(&state, Some(id), req.timeline_raw)?;
-    let job_id = state
-        .export_manager
-        .submit_job(cid, timeline, format)
-        .await;
+    let job_id = state.export_manager.submit_job(cid, timeline, format).await;
 
     let job = state
         .export_manager
@@ -863,10 +862,7 @@ pub async fn start_export_timeline(
 ) -> Result<Json<ExportJob>, ApiError> {
     let format = req.format.unwrap_or_default();
     let (cid, timeline) = reconstruct_timeline_for_export(&state, req.commit_id, req.timeline_raw)?;
-    let job_id = state
-        .export_manager
-        .submit_job(cid, timeline, format)
-        .await;
+    let job_id = state.export_manager.submit_job(cid, timeline, format).await;
 
     let job = state
         .export_manager
@@ -906,11 +902,13 @@ pub async fn download_export(
             })?;
 
             if !output_path.exists() {
-                return Err(ApiError::BadRequest("Exported file not found on disk".to_string()));
+                return Err(ApiError::BadRequest(
+                    "Exported file not found on disk".to_string(),
+                ));
             }
 
-            let bytes = std::fs::read(&output_path)
-                .map_err(|e| ApiError::Store(StoreError::Io(e)))?;
+            let bytes =
+                std::fs::read(&output_path).map_err(|e| ApiError::Store(StoreError::Io(e)))?;
 
             let ext = job.format.extension();
             let mut headers = HeaderMap::new();
@@ -921,18 +919,20 @@ pub async fn download_export(
             );
             headers.insert(
                 axum::http::header::CONTENT_DISPOSITION,
-                HeaderValue::from_str(&format!("attachment; filename=\"splice_export_{job_id}.{ext}\""))
-                    .unwrap_or(HeaderValue::from_static("attachment; filename=\"splice_export.mp4\"")),
+                HeaderValue::from_str(&format!(
+                    "attachment; filename=\"splice_export_{job_id}.{ext}\""
+                ))
+                .unwrap_or(HeaderValue::from_static(
+                    "attachment; filename=\"splice_export.mp4\"",
+                )),
             );
 
             Ok((headers, bytes).into_response())
         }
-        JobStatus::Processing | JobStatus::Queued => {
-            Err(ApiError::BadRequest("Export job is still processing".to_string()))
-        }
-        JobStatus::Failed(e) => {
-            Err(ApiError::BadRequest(format!("Export job failed: {e}")))
-        }
+        JobStatus::Processing | JobStatus::Queued => Err(ApiError::BadRequest(
+            "Export job is still processing".to_string(),
+        )),
+        JobStatus::Failed(e) => Err(ApiError::BadRequest(format!("Export job failed: {e}"))),
     }
 }
 
@@ -946,7 +946,7 @@ pub async fn run_gc(
     });
     let policy: RetentionPolicy = policy_req.into();
 
-    let report = splice_gc::collect_garbage(
+    let report = collect_garbage(
         state.commit_store.as_ref(),
         state.media_store.as_ref(),
         &policy,
@@ -955,15 +955,13 @@ pub async fn run_gc(
     Ok(Json(report))
 }
 
-pub async fn estimate_gc(
-    State(state): State<AppState>,
-) -> Result<Json<GcReport>, ApiError> {
+pub async fn estimate_gc(State(state): State<AppState>) -> Result<Json<GcReport>, ApiError> {
     let policy = RetentionPolicy {
         keep_starred_forever: true,
         prune_after: Duration::from_secs(30 * 24 * 60 * 60),
     };
 
-    let report = splice_gc::estimate_reclaimable(
+    let report = estimate_reclaimable(
         state.commit_store.as_ref(),
         state.media_store.as_ref(),
         &policy,
@@ -988,7 +986,7 @@ pub async fn export_video(
                         .ok()
                         .and_then(|h| state.media_store.resolve(&h))
                     {
-                        export_clips.push(splice_render::ExportClip {
+                        export_clips.push(ExportClip {
                             media_path,
                             in_point: clip.in_point,
                             out_point: clip.out_point,
@@ -1009,7 +1007,7 @@ pub async fn export_video(
                             .ok()
                             .and_then(|h| state.media_store.resolve(&h))
                         {
-                            export_clips.push(splice_render::ExportClip {
+                            export_clips.push(ExportClip {
                                 media_path,
                                 in_point: clip.in_point,
                                 out_point: clip.out_point,
@@ -1022,7 +1020,7 @@ pub async fn export_video(
             for hash in &commit.media_refs {
                 if let Some(media_path) = state.media_store.resolve(hash) {
                     let dur = probe_duration(&media_path);
-                    export_clips.push(splice_render::ExportClip {
+                    export_clips.push(ExportClip {
                         media_path,
                         in_point: 0.0,
                         out_point: dur,
@@ -1042,7 +1040,7 @@ pub async fn export_video(
         .suffix(".mp4")
         .tempfile()
         .map_err(|e| ApiError::Store(StoreError::Io(e)))?;
-    splice_render::render_export_mp4(&export_clips, temp_file.path())?;
+    render_export_mp4(&export_clips, temp_file.path())?;
 
     let bytes = std::fs::read(temp_file.path()).map_err(|e| ApiError::Store(StoreError::Io(e)))?;
 
@@ -1072,7 +1070,6 @@ pub async fn export_commit_video(
     .await
 }
 
-
 pub async fn squash_commits(
     State(state): State<AppState>,
     Json(req): Json<SquashRequest>,
@@ -1089,18 +1086,18 @@ pub async fn squash_commits(
     }
 
     // INFO: Sort commits chronologically from oldest to newest
-    commits.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    commits.sort_by_key(|a| a.timestamp);
 
-    let latest_commit = commits.last().ok_or_else(|| {
-        ApiError::BadRequest("No commits found to squash".to_string())
-    })?;
+    let latest_commit = commits
+        .last()
+        .ok_or_else(|| ApiError::BadRequest("No commits found to squash".to_string()))?;
     let latest_id = latest_commit.id;
 
-    let mut squashed = splice_commit::squash(&commits);
-    if let Some(msg) = req.message {
-        if !msg.trim().is_empty() {
-            squashed.message = msg.trim().to_string();
-        }
+    let mut squashed = squash(&commits);
+    if let Some(msg) = req.message
+        && !msg.trim().is_empty()
+    {
+        squashed.message = msg.trim().to_string();
     }
 
     let new_id = state.commit_store.append(squashed)?;
@@ -1127,10 +1124,10 @@ pub async fn stream_commit_preview(
             Timeline::from_raw_state(&commit, &raw_state, RevertMode::Preview, false)
                 .to_splice_commit_timeline()
         } else {
-            splice_commit::Timeline::from_commit(&commit)
+            SpliceCommitTimeline::from_commit(&commit)
         }
     } else {
-        splice_commit::Timeline::from_commit(&commit)
+        SpliceCommitTimeline::from_commit(&commit)
     };
 
     let proxy_path = match state.proxy_cache.render_or_get(&timeline) {
@@ -1152,7 +1149,6 @@ pub async fn stream_commit_preview(
             }
         }
     };
-
 
     let service = ServeFile::new(&proxy_path);
     let mut res = match service.oneshot(req).await {
@@ -1219,6 +1215,8 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/commits/diff", get(get_commits_diff))
         .route("/diff", post(compute_timeline_diff))
         .route("/commits/:id/revert", post(revert).get(revert))
+        .route("/revert/:id", post(revert).get(revert))
+
         .route("/commits/:id/thumbnail", get(get_commit_thumbnail))
         .route("/commits/:id/preview.mp4", get(stream_commit_preview))
         .route("/commits/:id/preview", get(stream_commit_preview))
@@ -1228,10 +1226,7 @@ pub fn router_with_state(state: AppState) -> Router {
             "/commits/:id/export",
             post(start_export_commit).get(export_commit_video),
         )
-        .route(
-            "/export",
-            post(start_export_timeline).get(export_video),
-        )
+        .route("/export", post(start_export_timeline).get(export_video))
         .route("/jobs/:job_id", get(export_status))
         .route("/exports/:job_id", get(export_status))
         .route("/exports/:job_id/download", get(download_export))

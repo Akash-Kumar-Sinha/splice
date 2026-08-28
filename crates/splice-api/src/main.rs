@@ -3,10 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use splice_api::router_with_sync;
-use splice_commit::SqliteCommitStore;
-use splice_media::FsMediaStore;
-use splice_render::{FfmpegThumbnailer, FsThumbnailCache};
-use splice_sync::{S3RemoteStore, SyncEngine};
+use splice_sdk::{
+    FfmpegThumbnailer, FsMediaStore, FsThumbnailCache, S3RemoteStore, SqliteCommitStore, SyncEngine,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

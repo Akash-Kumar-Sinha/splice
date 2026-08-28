@@ -1,5 +1,4 @@
-use splice_commit::{Commit, CommitId, CommitStore, StoreError};
-use splice_media::MediaHash;
+use splice_sdk::{Commit, CommitId, CommitStore, MediaHash, StoreError};
 use time::OffsetDateTime;
 
 pub fn seed_if_empty(store: &dyn CommitStore) -> Result<usize, StoreError> {
@@ -32,7 +31,7 @@ pub fn seed_if_empty(store: &dyn CommitStore) -> Result<usize, StoreError> {
             CommitId::new(),
             parent,
             OffsetDateTime::now_utc(),
-            "editor@splice.dev",
+            "aks.krsinha@gmail.com",
             message,
             timeline_hash,
             media_refs,

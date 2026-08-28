@@ -19,4 +19,3 @@ pub trait CommitStore: Send + Sync {
     fn remove_commit(&self, id: &CommitId) -> Result<bool, StoreError>;
     fn remove_commits(&self, ids: &[CommitId]) -> Result<usize, StoreError>;
 }
-

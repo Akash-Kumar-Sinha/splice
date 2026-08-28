@@ -18,7 +18,6 @@ pub trait MediaStore: Send + Sync {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct FsMediaStore {
     root: PathBuf,
@@ -112,10 +111,11 @@ impl MediaStore for FsMediaStore {
                 for file_entry in fs::read_dir(prefix_entry.path())? {
                     let file_entry = file_entry?;
                     let file_name = file_entry.file_name().to_string_lossy().to_string();
-                    if !file_name.starts_with('.') && file_entry.file_type()?.is_file() {
-                        if let Ok(hash) = MediaHash::from_hex(&file_name) {
-                            hashes.push(hash);
-                        }
+                    if !file_name.starts_with('.')
+                        && file_entry.file_type()?.is_file()
+                        && let Ok(hash) = MediaHash::from_hex(&file_name)
+                    {
+                        hashes.push(hash);
                     }
                 }
             }
@@ -143,5 +143,3 @@ impl MediaStore for FsMediaStore {
         Some(self.root.clone())
     }
 }
-
-

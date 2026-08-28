@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-
 use splice_commit::{Commit, CommitId, CommitStore};
 use splice_media::{MediaHash, MediaStore};
 use time::OffsetDateTime;
@@ -37,8 +36,7 @@ fn run_mark_and_sweep(
     let head_id = store.head_id()?;
     let now = OffsetDateTime::now_utc();
 
-    let commit_map: HashMap<CommitId, &Commit> =
-        all_commits.iter().map(|c| (c.id, c)).collect();
+    let commit_map: HashMap<CommitId, &Commit> = all_commits.iter().map(|c| (c.id, c)).collect();
 
     // INFO: Tagged commit IDs lookup
     let tagged_commit_ids: HashSet<CommitId> = all_tags.into_iter().map(|t| t.commit_id).collect();
@@ -51,8 +49,8 @@ fn run_mark_and_sweep(
         marked_commits.insert(h);
     }
 
-    let prune_after_time_dur = time::Duration::try_from(policy.prune_after)
-        .unwrap_or(time::Duration::days(30));
+    let prune_after_time_dur =
+        time::Duration::try_from(policy.prune_after).unwrap_or(time::Duration::days(30));
 
     for commit in &all_commits {
         // INFO: Keep starred/tagged commits if policy specifies
@@ -78,12 +76,11 @@ fn run_mark_and_sweep(
         }
         marked_commits.insert(current_id);
 
-        if let Some(commit) = commit_map.get(&current_id) {
-            if let Some(parent_id) = commit.parent {
-                if !visited.contains(&parent_id) {
-                    to_visit.push(parent_id);
-                }
-            }
+        if let Some(commit) = commit_map.get(&current_id)
+            && let Some(parent_id) = commit.parent
+            && !visited.contains(&parent_id)
+        {
+            to_visit.push(parent_id);
         }
     }
 
@@ -104,10 +101,10 @@ fn run_mark_and_sweep(
             }
 
             // INFO: Also inspect raw timeline JSON for any referenced clip hashes
-            if let Ok(Some(raw_json)) = store.get_timeline(&commit.id) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw_json) {
-                    extract_media_hashes_from_json(&val, &mut retained_media_hashes);
-                }
+            if let Ok(Some(raw_json)) = store.get_timeline(&commit.id)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw_json)
+            {
+                extract_media_hashes_from_json(&val, &mut retained_media_hashes);
             }
         }
     }
@@ -155,16 +152,17 @@ fn run_mark_and_sweep(
 fn extract_media_hashes_from_json(val: &serde_json::Value, hashes: &mut HashSet<MediaHash>) {
     match val {
         serde_json::Value::Object(map) => {
-            if let Some(serde_json::Value::String(hash_str)) = map.get("media_hash") {
-                if let Ok(h) = MediaHash::from_hex(hash_str) {
-                    hashes.insert(h);
-                }
+            if let Some(serde_json::Value::String(hash_str)) = map.get("media_hash")
+                && let Ok(h) = MediaHash::from_hex(hash_str)
+            {
+                hashes.insert(h);
             }
-            if let Some(serde_json::Value::String(hash_str)) = map.get("media") {
-                if let Ok(h) = MediaHash::from_hex(hash_str) {
-                    hashes.insert(h);
-                }
+            if let Some(serde_json::Value::String(hash_str)) = map.get("media")
+                && let Ok(h) = MediaHash::from_hex(hash_str)
+            {
+                hashes.insert(h);
             }
+
             for v in map.values() {
                 extract_media_hashes_from_json(v, hashes);
             }

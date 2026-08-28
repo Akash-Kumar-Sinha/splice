@@ -1,5 +1,5 @@
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetentionPolicy {

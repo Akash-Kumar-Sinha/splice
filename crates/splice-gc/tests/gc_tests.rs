@@ -77,7 +77,8 @@ fn test_gc_pruning_and_media_ref_counting() {
     };
 
     // Estimate first
-    let estimate = estimate_reclaimable(commit_store.as_ref(), media_store.as_ref(), &policy).unwrap();
+    let estimate =
+        estimate_reclaimable(commit_store.as_ref(), media_store.as_ref(), &policy).unwrap();
     assert_eq!(estimate.commits_scanned, 3);
     // All 3 commits are retained: recent is HEAD, starred is Tagged, old is Ancestor of recent!
     assert_eq!(estimate.commits_retained, 3);
@@ -102,7 +103,8 @@ fn test_gc_pruning_and_media_ref_counting() {
     // restore HEAD back to recent
     commit_store.set_head(&recent_id).unwrap();
 
-    let estimate2 = estimate_reclaimable(commit_store.as_ref(), media_store.as_ref(), &policy).unwrap();
+    let estimate2 =
+        estimate_reclaimable(commit_store.as_ref(), media_store.as_ref(), &policy).unwrap();
     assert_eq!(estimate2.commits_scanned, 4);
     assert_eq!(estimate2.commits_retained, 3);
     assert_eq!(estimate2.commits_pruned, 1);

@@ -14,7 +14,7 @@ fn test_append_and_get_single_commit() {
 
     let commit = Commit::create(
         None,
-        "editor@splice.dev",
+        "aks.krsinha@gmail.com",
         "Initial project creation",
         timeline_hash,
         vec![clip_hash],
@@ -29,7 +29,7 @@ fn test_append_and_get_single_commit() {
     let fetched = store.get(&commit_id).expect("get commit");
     assert_eq!(fetched.id, commit_id);
     assert_eq!(fetched.parent, None);
-    assert_eq!(fetched.author, "editor@splice.dev");
+    assert_eq!(fetched.author, "aks.krsinha@gmail.com");
     assert_eq!(fetched.message, "Initial project creation");
     assert_eq!(fetched.timeline_hash, timeline_hash);
     assert_eq!(fetched.media_refs, vec![clip_hash]);

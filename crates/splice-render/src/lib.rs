@@ -16,5 +16,3 @@ pub use proxy::{
 };
 pub use thumbnail::{FfmpegThumbnailer, ThumbnailGenerator};
 pub use worker::{ThumbnailJob, ThumbnailQueue};
-
-

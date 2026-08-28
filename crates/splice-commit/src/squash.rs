@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use splice_media::MediaHash;
+use std::collections::HashSet;
 
 use crate::commit::Commit;
 
@@ -10,7 +10,6 @@ pub fn squash(commits: &[Commit]) -> Commit {
             "system",
             "Empty squash",
             MediaHash::compute(b"empty"),
-
             vec![],
         );
     }

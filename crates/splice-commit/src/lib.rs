@@ -17,4 +17,3 @@ pub use store::CommitStore;
 pub use tag::Tag;
 pub use timeline::{Clip, Timeline, Track};
 pub use tree::{CommitTreeNode, build_commit_tree};
-

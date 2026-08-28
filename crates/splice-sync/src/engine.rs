@@ -62,10 +62,12 @@ impl SyncEngine {
         });
 
         // CRITICAL: Spawn background sync outbox worker loop
-        let worker_engine = engine.clone();
-        tokio::spawn(async move {
-            worker_engine.run_background_loop().await;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let worker_engine = engine.clone();
+            handle.spawn(async move {
+                worker_engine.run_background_loop().await;
+            });
+        }
 
         engine
     }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
-use splice_commit::{Commit, CommitId};
-use splice_media::MediaHash;
+use splice_sdk::{
+    Clip as SdkClip, Commit, CommitId, MediaHash, MediaStore, Timeline as SdkTimeline,
+    Track as SdkTrack,
+};
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -19,7 +21,12 @@ pub struct TimelineClip {
     pub start_time: f64,
     pub duration: f64,
     pub track_index: usize,
+    #[serde(default)]
+    pub in_point: f64,
+    #[serde(default)]
+    pub out_point: f64,
 }
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineTrack {
@@ -92,6 +99,8 @@ impl Timeline {
                     start_time: raw_clip.position,
                     duration,
                     track_index: t_idx,
+                    in_point: raw_clip.in_point,
+                    out_point: raw_clip.out_point,
                 });
 
                 if raw_clip.position + duration > total_duration {
@@ -122,28 +131,28 @@ impl Timeline {
         }
     }
 
-    pub fn to_splice_commit_timeline(&self) -> splice_commit::Timeline {
+    pub fn to_splice_commit_timeline(&self) -> SdkTimeline {
         let mut tracks = Vec::new();
         for t in &self.tracks {
             let mut clips = Vec::new();
             for c in &t.clips {
-                clips.push(splice_commit::Clip::new(
+                clips.push(SdkClip::new(
                     c.media_hash,
-                    std::time::Duration::from_secs_f64(0.0),
-                    std::time::Duration::from_secs_f64(c.duration),
+                    std::time::Duration::from_secs_f64(c.in_point),
+                    std::time::Duration::from_secs_f64(c.out_point),
                     std::time::Duration::from_secs_f64(c.start_time),
                 ));
             }
-            tracks.push(splice_commit::Track::new(clips));
+            tracks.push(SdkTrack::new(clips));
         }
-        splice_commit::Timeline::new(tracks)
+        SdkTimeline::new(tracks)
     }
 
     pub fn reconstruct(
         commit: &Commit,
         mode: RevertMode,
         is_head: bool,
-        media_store: Option<&dyn splice_media::MediaStore>,
+        media_store: Option<&dyn MediaStore>,
     ) -> Self {
         let mut video_clips = Vec::new();
         let mut current_video_time = 0.0;
@@ -166,6 +175,8 @@ impl Timeline {
                 start_time: current_video_time,
                 duration: clip_duration,
                 track_index: 0,
+                in_point: 0.0,
+                out_point: clip_duration,
             });
             current_video_time += clip_duration;
         }
@@ -178,9 +189,12 @@ impl Timeline {
                 start_time: 0.0,
                 duration: 10.0,
                 track_index: 0,
+                in_point: 0.0,
+                out_point: 10.0,
             });
             current_video_time = 10.0;
         }
+
 
         let total_duration = current_video_time.max(0.1);
 

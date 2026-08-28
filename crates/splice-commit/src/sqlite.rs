@@ -518,13 +518,11 @@ impl CommitStore for SqliteCommitStore {
                 del_timelines.execute(params![&id_str])?;
             }
             {
-                let mut del_refs =
-                    tx.prepare_cached("DELETE FROM refs WHERE commit_id = ?1")?;
+                let mut del_refs = tx.prepare_cached("DELETE FROM refs WHERE commit_id = ?1")?;
                 del_refs.execute(params![&id_str])?;
             }
             {
-                let mut del_commit =
-                    tx.prepare_cached("DELETE FROM commits WHERE id = ?1")?;
+                let mut del_commit = tx.prepare_cached("DELETE FROM commits WHERE id = ?1")?;
                 let affected = del_commit.execute(params![&id_str])?;
                 total_deleted += affected;
             }
@@ -534,7 +532,6 @@ impl CommitStore for SqliteCommitStore {
         Ok(total_deleted)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

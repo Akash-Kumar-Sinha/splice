@@ -32,7 +32,10 @@ impl LowResProxyRenderer {
 
     fn resolve_clip_media_path(&self, media_hash_str: &str) -> Option<PathBuf> {
         if media_hash_str.len() >= 2 {
-            let prefix_path = self.media_dir.join(&media_hash_str[..2]).join(media_hash_str);
+            let prefix_path = self
+                .media_dir
+                .join(&media_hash_str[..2])
+                .join(media_hash_str);
             if prefix_path.exists() {
                 return Some(prefix_path);
             }
@@ -71,7 +74,6 @@ impl LowResProxyRenderer {
     }
 }
 
-
 impl ProxyRenderer for LowResProxyRenderer {
     fn render(&self, timeline: &Timeline) -> Result<PathBuf, RenderError> {
         let _ = fs::create_dir_all(&self.cache_dir);
@@ -80,12 +82,11 @@ impl ProxyRenderer for LowResProxyRenderer {
         let output_path = self.cache_dir.join(output_filename);
 
         // INFO: Fast cache hit check
-        if output_path.exists() {
-            if let Ok(meta) = fs::metadata(&output_path) {
-                if meta.len() > 0 {
-                    return Ok(output_path);
-                }
-            }
+        if output_path.exists()
+            && let Ok(meta) = fs::metadata(&output_path)
+            && meta.len() > 0
+        {
+            return Ok(output_path);
         }
 
         let mut export_clips = Vec::new();
@@ -143,7 +144,10 @@ impl FullResExportRenderer {
 
     fn resolve_clip_media_path(&self, media_hash_str: &str) -> Option<PathBuf> {
         if media_hash_str.len() >= 2 {
-            let prefix_path = self.media_dir.join(&media_hash_str[..2]).join(media_hash_str);
+            let prefix_path = self
+                .media_dir
+                .join(&media_hash_str[..2])
+                .join(media_hash_str);
             if prefix_path.exists() {
                 return Some(prefix_path);
             }
@@ -190,12 +194,11 @@ impl FullResExportRenderer {
         let output_filename = format!("{hash_hex}_export.{}", format.extension());
         let output_path = self.output_dir.join(output_filename);
 
-        if output_path.exists() {
-            if let Ok(meta) = fs::metadata(&output_path) {
-                if meta.len() > 0 {
-                    return Ok(output_path);
-                }
-            }
+        if output_path.exists()
+            && let Ok(meta) = fs::metadata(&output_path)
+            && meta.len() > 0
+        {
+            return Ok(output_path);
         }
 
         let mut export_clips = Vec::new();
@@ -213,7 +216,6 @@ impl FullResExportRenderer {
                 });
             }
         }
-
 
         if export_clips.is_empty() {
             return Err(RenderError::EmptyTimeline);
@@ -239,33 +241,35 @@ impl ProxyRenderer for FullResExportRenderer {
     }
 }
 
-fn generate_fallback_export(
-    clips: &[ExportClip],
-    output_path: &Path,
-) -> Result<(), RenderError> {
-    if let Some(first) = clips.first() {
-        if first.media_path.exists() {
-            let _ = fs::copy(&first.media_path, output_path);
-            return Ok(());
-        }
+fn generate_fallback_export(clips: &[ExportClip], output_path: &Path) -> Result<(), RenderError> {
+    if let Some(first) = clips.first()
+        && first.media_path.exists()
+    {
+        let _ = fs::copy(&first.media_path, output_path);
+        return Ok(());
     }
     let mut file = File::create(output_path)?;
     file.write_all(b"SPLICE_FULL_RES_EXPORT_FALLBACK")?;
     Ok(())
 }
 
-
 pub fn render_low_res_proxy_mp4(
     clips: &[ExportClip],
     output_path: &Path,
 ) -> Result<(), RenderError> {
+    if output_path.exists()
+        && let Ok(meta) = fs::metadata(output_path)
+        && meta.len() > 0
+    {
+        return Ok(());
+    }
+
     if clips.is_empty() {
         return Err(RenderError::EmptyTimeline);
     }
 
     if clips.len() == 1 {
         let clip = &clips[0];
-        // CRITICAL: Low-res fast proxy encoding: scale to 480p with ultrafast preset
         let status = Command::new("ffmpeg")
             .arg("-y")
             .arg("-ss")
@@ -375,11 +379,11 @@ fn generate_fallback_proxy_mp4(
     clips: &[ExportClip],
     output_path: &Path,
 ) -> Result<(), RenderError> {
-    if let Some(first) = clips.first() {
-        if first.media_path.exists() {
-            let _ = fs::copy(&first.media_path, output_path);
-            return Ok(());
-        }
+    if let Some(first) = clips.first()
+        && first.media_path.exists()
+    {
+        let _ = fs::copy(&first.media_path, output_path);
+        return Ok(());
     }
 
     let mut file = File::create(output_path)?;
@@ -407,12 +411,11 @@ impl FsProxyCache {
         let hash_hex = timeline.compute_hash().to_hex();
         let output_filename = format!("{hash_hex}_proxy.mp4");
         let output_path = self.cache_dir.join(output_filename);
-        if output_path.exists() {
-            if let Ok(meta) = fs::metadata(&output_path) {
-                if meta.len() > 0 {
-                    return Some(output_path);
-                }
-            }
+        if output_path.exists()
+            && let Ok(meta) = fs::metadata(&output_path)
+            && meta.len() > 0
+        {
+            return Some(output_path);
         }
         None
     }
@@ -425,12 +428,14 @@ impl FsProxyCache {
     }
 
     pub fn kick_off_background_render(&self, timeline: Timeline) {
-        let cache_clone = self.clone();
-        tokio::spawn(async move {
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = cache_clone.renderer.render(&timeline);
-            })
-            .await;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let cache_clone = self.clone();
+            handle.spawn(async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = cache_clone.renderer.render(&timeline);
+                })
+                .await;
+            });
+        }
     }
 }
