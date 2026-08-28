@@ -62,7 +62,7 @@ export default function AppHeader({ headCommitId: _headCommitId, commitCount, on
         </nav>
       </div>
 
-      <div className="flex items-center gap-2.5">
+      {/*<div className="flex items-center gap-2.5">
         <SyncStatusPill />
         {onOpenStorageModal && (
           <button
@@ -71,7 +71,7 @@ export default function AppHeader({ headCommitId: _headCommitId, commitCount, on
             title="Storage & GC"
           />
         )}
-      </div>
+      </div>*/}
     </header>
   );
 }
