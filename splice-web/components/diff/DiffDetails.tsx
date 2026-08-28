@@ -5,8 +5,8 @@ import {
   IconPlus,
   IconMinus,
   IconArrowsExchange,
-  IconArrowRight,
 } from '@tabler/icons-react';
+
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import { TimelineDiff } from '@/lib/types';
@@ -76,7 +76,8 @@ export default function DiffDetails({ diff, loading }: DiffDetailsProps) {
           label="Modified"
           count={diff.moved.length}
           color="amber"
-          items={diff.moved.map(([m, rangeA, rangeB]) => `${rangeA.out_point.toFixed(1)}s → ${rangeB.out_point.toFixed(1)}s`)}
+          items={diff.moved.map(([_m, rangeA, rangeB]) => `${rangeA.out_point.toFixed(1)}s → ${rangeB.out_point.toFixed(1)}s`)}
+
           emptyText="None"
         />
       </div>

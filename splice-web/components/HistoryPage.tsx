@@ -31,9 +31,10 @@ export default function HistoryPage({ initialCommits }: HistoryPageProps) {
     }
   };
 
-  const handleOpenInEditor = (_timeline: Timeline) => {
-    router.push('/editor');
+  const handleOpenInEditor = (timeline: Timeline) => {
+    router.push(`/editor?commitId=${timeline.commit_id}`);
   };
+
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden">

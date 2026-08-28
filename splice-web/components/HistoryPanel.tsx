@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   IconSearch,
   IconRefresh,
@@ -8,6 +9,7 @@ import {
   IconList,
   IconGitMerge,
   IconFilter,
+  IconChevronDown,
 } from '@tabler/icons-react';
 
 import { Button } from '@/components/ui/button';
@@ -29,9 +31,12 @@ import {
 } from '@/components/ui/sidebar';
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { cn } from '@/lib/utils';
 import { Commit, CommitTreeNode, Timeline } from '@/lib/types';
+import { safePlay, safePause, cn } from '@/lib/utils';
+
+
 import { API_URL } from '@/lib/api';
+
 import { useRevert } from '@/hooks/use-revert';
 
 import DiffInspector from './DiffInspector';
@@ -53,6 +58,8 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [treeNodes, setTreeNodes] = useState<CommitTreeNode[]>([]);
   const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(
+
+
     initialCommits.length > 0 ? initialCommits[0].id : null
   );
   const [timeline, setTimeline] = useState<Timeline | null>(null);
@@ -87,6 +94,47 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [exportTarget, setExportTarget] = useState<{ id: string; message: string } | null>(null);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set());
+
+  const toggleCollapseProject = (rootId: string) => {
+    setCollapsedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      return next;
+    });
+  };
+
+
+  // Collect all node IDs that have children (for collapse-all)
+  const collectAllParentIds = useCallback((nodes: CommitTreeNode[]): Set<string> => {
+    const ids = new Set<string>();
+    const walk = (node: CommitTreeNode) => {
+      if (node.children && node.children.length > 0) {
+        ids.add(node.commit.id);
+        node.children.forEach(walk);
+      }
+    };
+    nodes.forEach(walk);
+    return ids;
+  }, []);
+
+  // Find all ancestor IDs along the path to a target commit
+  const findAncestorIds = useCallback((nodes: CommitTreeNode[], targetId: string): Set<string> => {
+    const ancestors = new Set<string>();
+    const walk = (node: CommitTreeNode): boolean => {
+      if (node.commit.id === targetId) return true;
+      for (const child of node.children || []) {
+        if (walk(child)) {
+          ancestors.add(node.commit.id);
+          return true;
+        }
+      }
+      return false;
+    };
+    nodes.forEach(walk);
+    return ancestors;
+  }, []);
 
   const fetchCommits = useCallback(async () => {
     try {
@@ -120,6 +168,34 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
 
   useEffect(() => { setCommits(initialCommits); }, [initialCommits]);
   useEffect(() => { refreshAll(); }, [refreshAll]);
+
+  // When tree first loads, collapse everything and expand only the selected node's path
+  useEffect(() => {
+    if (treeNodes.length > 0) {
+      const allParents = collectAllParentIds(treeNodes);
+      setCollapsedNodeIds(allParents);
+      if (selectedCommitId) {
+        const ancestors = findAncestorIds(treeNodes, selectedCommitId);
+        setCollapsedNodeIds((prev) => {
+          const next = new Set(prev);
+          ancestors.forEach((id) => next.delete(id));
+          return next;
+        });
+      }
+    }
+  }, [treeNodes, collectAllParentIds, findAncestorIds]);
+
+  // When selection changes, expand the path to the selected node
+  useEffect(() => {
+    if (selectedCommitId && treeNodes.length > 0) {
+      const ancestors = findAncestorIds(treeNodes, selectedCommitId);
+      setCollapsedNodeIds((prev) => {
+        const next = new Set(prev);
+        ancestors.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
+  }, [selectedCommitId, treeNodes, findAncestorIds]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -157,34 +233,40 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
       for (const clip of clips) {
         if (time >= clip.start_time && time < clip.start_time + clip.duration) {
           const offset = time - clip.start_time;
-          return { clip, offset, videoTime: offset };
+          const inPoint = clip.in_point ?? 0;
+          return { clip, offset, videoTime: inPoint + offset };
         }
       }
       if (clips.length > 0) {
         const last = clips[clips.length - 1];
         if (time >= last.start_time + last.duration) {
-          return { clip: last, offset: last.duration, videoTime: last.duration };
+          const inPoint = last.in_point ?? 0;
+          return { clip: last, offset: last.duration, videoTime: inPoint + last.duration };
         }
-        return { clip: clips[0], offset: 0, videoTime: 0 };
+        const first = clips[0];
+        const inPoint = first.in_point ?? 0;
+        return { clip: first, offset: 0, videoTime: inPoint };
       }
       return null;
     },
     [timeline]
   );
 
+
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (isPlaying) {
-      videoRef.current.pause();
+      safePause(videoRef.current);
       setIsPlaying(false);
     } else {
       if (videoTime >= (timeline?.total_duration || videoDuration) - 0.1) {
         handleSeek(0);
       }
-      videoRef.current.play().catch(console.warn);
+      safePlay(videoRef.current);
       setIsPlaying(true);
     }
   };
+
 
   const handleSeek = (time: number) => {
     const maxDur = timeline?.total_duration || videoDuration;
@@ -314,7 +396,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     setIsDiffMode(true);
   };
 
-  const handleToggleDiff = () => {
+  const _handleToggleDiff = () => {
     if (!isDiffMode) {
       const targetId = selectedCommitId || (commits.length > 0 ? commits[0].id : null);
       if (targetId) {
@@ -324,6 +406,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     }
     setIsDiffMode(!isDiffMode);
   };
+
 
 
   useEffect(() => {
@@ -343,6 +426,34 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     return matchesSearch && matchesStarred && matchesTagFilter;
   });
 
+  const projectSequences = useMemo(() => {
+    const commitMap = new Map<string, Commit>(commits.map((c) => [c.id, c]));
+
+    const getRootId = (id: string) => {
+      let curr = commitMap.get(id);
+      const visited = new Set<string>();
+      while (curr && curr.parent && commitMap.has(curr.parent) && !visited.has(curr.id)) {
+        visited.add(curr.id);
+        curr = commitMap.get(curr.parent);
+      }
+      return curr ? curr.id : id;
+    };
+
+    const map = new Map<string, { root: Commit; head: Commit; members: Commit[] }>();
+    for (const c of filteredCommits) {
+      const rootId = getRootId(c.id);
+      const rootCommit = commitMap.get(rootId) || c;
+      if (!map.has(rootId)) {
+        map.set(rootId, { root: rootCommit, head: c, members: [] });
+      }
+      const group = map.get(rootId)!;
+      group.members.push(c);
+    }
+
+    return Array.from(map.values());
+  }, [commits, filteredCommits]);
+
+
   const selectedCommit = commits.find((c) => c.id === selectedCommitId);
   const clips = timeline?.tracks[0]?.clips || [];
   const activeHistoryClip = getActiveHistoryClipInfo(videoTime);
@@ -357,17 +468,7 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
     });
   };
 
-  const _handleCollapseAll = () => {
-    const allParentIds = new Set<string>();
-    const collect = (node: CommitTreeNode) => {
-      if (node.children?.length) {
-        allParentIds.add(node.commit.id);
-        node.children.forEach(collect);
-      }
-    };
-    treeNodes.forEach(collect);
-    setCollapsedNodeIds(allParentIds);
-  };
+  const _handleCollapseAll = () => setCollapsedNodeIds(collectAllParentIds(treeNodes));
 
   const _handleExpandAll = () => setCollapsedNodeIds(new Set());
 
@@ -377,75 +478,109 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
       style={{ "--sidebar-width": "20rem", "--sidebar-width-mobile": "16rem" } as React.CSSProperties}
     >
       <div className="flex flex-1 w-full h-full overflow-hidden bg-background text-foreground font-sans relative">
-        <Sidebar className="border-r border-border bg-card/40" collapsible="offcanvas">
-          <SidebarHeader className="p-3 border-b border-border/50 flex flex-col gap-2.5">
+        <Sidebar className="border-r border-border bg-card/30" collapsible="offcanvas">
+          <SidebarHeader className="p-4 border-b border-border/40 flex flex-col gap-3">
+            {/* Title + View Toggle */}
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-foreground">
-                History
-              </span>
+              <div className="flex flex-col">
+                <span className="text-sm font-semibold text-foreground tracking-tight">
+                  Version History
+                </span>
+                <span className="text-[10px] text-muted-foreground/60">
+                  Browse and manage saved versions
+                </span>
+              </div>
 
-              <div className="flex items-center gap-0.5 bg-muted/30 p-0.5 rounded-md">
+              <div className="flex items-center gap-0.5 bg-muted/40 p-0.5 rounded-lg border border-border/30">
                 <Button
                   variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
                   size="icon-xs"
                   onClick={() => setViewMode('tree')}
-                  className="size-5"
-                  title="Tree"
+                  className="size-6 rounded-md"
+                  title="Branch Tree"
                 >
-                  <IconGitBranch className="size-2.5" />
+                  <IconGitBranch className="size-3" />
                 </Button>
                 <Button
                   variant={viewMode === 'flat' ? 'secondary' : 'ghost'}
                   size="icon-xs"
                   onClick={() => setViewMode('flat')}
-                  className="size-5"
+                  className="size-6 rounded-md"
                   title="List"
                 >
-                  <IconList className="size-2.5" />
+                  <IconList className="size-3" />
                 </Button>
               </div>
             </div>
 
+            {/* Search */}
             <div className="relative">
-              <IconSearch className="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
+              <IconSearch className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
               <Input
                 placeholder="Search versions..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 text-[11px] bg-muted/20 border-border/40"
+                className="pl-8 h-8 text-xs bg-muted/30 border-border/40 rounded-lg placeholder:text-muted-foreground/40"
               />
             </div>
           </SidebarHeader>
 
           <SidebarContent className="p-0 flex flex-col">
-            {selectedForSquash.length >= 2 && (
-              <div className="p-2.5 bg-primary/15 border-b border-primary/30 flex items-center justify-between gap-2 shrink-0 animate-in fade-in slide-in-from-top-2">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <IconGitMerge className="size-4 text-primary" />
-                  <span className="font-bold text-foreground">{selectedForSquash.length} selected</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="default" size="xs" onClick={handleOpenSquashModal} className="font-bold text-[11px] h-6 px-2 shadow bg-primary hover:bg-primary/90 text-primary-foreground">
-                    Squash Selected
-                  </Button>
-                  <Button variant="ghost" size="xs" onClick={() => setSelectedForSquash([])} className="text-[10px] h-6 px-1.5 text-muted-foreground hover:text-foreground">
-                    Clear
-                  </Button>
-                </div>
-              </div>
-            )}
+            <AnimatePresence>
+              {selectedForSquash.length >= 2 && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-4 py-3 bg-primary/10 border-b border-primary/20 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <motion.div
+                        className="size-6 rounded-md bg-primary/20 flex items-center justify-center"
+                        animate={{ scale: [1, 1.1, 1] }}
+                        transition={{ duration: 0.3, repeat: Infinity, repeatDelay: 2 }}
+                      >
+                        <IconGitMerge className="size-3.5 text-primary" data-icon="inline-start" />
+                      </motion.div>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-semibold text-foreground">{selectedForSquash.length} versions selected</span>
+                        <span className="text-[10px] text-muted-foreground/60">Ready to squash</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="default" size="xs" onClick={handleOpenSquashModal} className="font-semibold text-[11px] h-7 px-3 shadow-sm bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg">
+                        Squash
+                      </Button>
+                      <Button variant="ghost" size="xs" onClick={() => setSelectedForSquash([])} className="text-[11px] h-7 px-2 text-muted-foreground hover:text-foreground">
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-            <ScrollArea className="h-full w-full p-2 overflow-x-hidden">
+            <ScrollArea className="h-full w-full px-3 py-2 overflow-x-hidden">
               <SidebarGroup className="p-0">
-                <SidebarGroupLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/60 px-2 py-1">
-                  {viewMode === 'tree' ? 'Branches' : 'All saves'}
+                <SidebarGroupLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 px-1 py-1.5">
+                  {viewMode === 'tree' ? 'Version Tree' : 'All Saves'}
                 </SidebarGroupLabel>
+
                 <SidebarGroupContent>
                   {viewMode === 'tree' && !searchQuery && !starredOnly && !selectedTagFilter ? (
+
                     <div className="flex flex-col gap-1.5 py-1">
                       {treeNodes.length === 0 ? (
-                        <div className="text-center py-8 text-muted-foreground text-xs">
-                          No saved versions yet.
+                        <div className="text-center py-12 text-muted-foreground text-xs flex flex-col items-center gap-3">
+                          <div className="size-12 rounded-xl bg-muted/30 flex items-center justify-center">
+                            <IconGitBranch className="size-5 text-muted-foreground/30" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium text-muted-foreground/70">No versions yet</span>
+                            <span className="text-[10px] text-muted-foreground/40">Save your first version to get started</span>
+                          </div>
                         </div>
                       ) : (
                         <div className="flex flex-col py-1">
@@ -474,44 +609,134 @@ export default function HistoryPanel({ initialCommits, onOpenInEditor }: History
                         </div>
                       )}
                     </div>
-                  ) : (
-                    <SidebarMenu className="gap-1.5">
-                      {filteredCommits.length === 0 ? (
-                        <div className="text-center py-10 text-muted-foreground text-xs flex flex-col items-center gap-2">
-                          <IconFilter className="size-6 text-muted-foreground/40" />
-                          <span>No matching versions found</span>
+                  ) : projectSequences.length === 0 ? (
+
+                      <div className="text-center py-12 text-muted-foreground text-xs flex flex-col items-center gap-3">
+                        <div className="size-12 rounded-xl bg-muted/30 flex items-center justify-center">
+                          <IconFilter className="size-5 text-muted-foreground/30" />
                         </div>
-                      ) : (
-                        filteredCommits.map((commit, i) => (
-                          <CommitListItem
-                            key={commit.id}
-                            commit={commit}
-                            index={i}
-                            totalCount={filteredCommits.length}
-                            isSelected={selectedCommitId === commit.id}
-                            isHead={activeHeadId === commit.id}
-                            isSelectedForSquash={selectedForSquash.includes(commit.id)}
-                            hasStarTag={
-                              commit.tags?.includes('Picture Lock') ||
-                              commit.tags?.includes("Director's Cut") ||
-                              commit.tags?.includes('Starred')
-                            }
-                            onSelect={(id) => handleSelectCommit(id, 'preview')}
-                            onToggleSelectForSquash={handleToggleSelectForSquash}
-                            onToggleStar={handleToggleStar}
-                          />
-                        ))
-                      )}
-                    </SidebarMenu>
-                  )}
-                </SidebarGroupContent>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium text-muted-foreground/70">No matching versions</span>
+                          <span className="text-[10px] text-muted-foreground/40">Try adjusting your search or filters</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <motion.div
+                        className="flex flex-col gap-3 py-1"
+                        initial="hidden"
+                        animate="visible"
+                        variants={{
+                          hidden: { opacity: 0 },
+                          visible: {
+                            opacity: 1,
+                            transition: { staggerChildren: 0.08 }
+                          }
+                        }}
+                      >
+                        {projectSequences.map((group) => {
+                          const isCollapsed = collapsedProjectIds.has(group.root.id);
+
+                          return (
+                            <motion.div
+                              key={group.root.id}
+                              variants={{
+                                hidden: { opacity: 0, y: 10 },
+                                visible: { opacity: 1, y: 0 }
+                              }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                              className="flex flex-col rounded-xl border border-border/50 bg-card/40 overflow-hidden shadow-sm"
+                            >
+                              {/* Progress Sequence Header (Collapsible) */}
+                              <div
+                                onClick={() => toggleCollapseProject(group.root.id)}
+                                className="flex items-center justify-between p-3 bg-muted/15 hover:bg-muted/30 transition-colors cursor-pointer select-none border-b border-border/30"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <motion.div
+                                    className="size-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0"
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                  >
+                                    <IconChevronDown
+                                      className={cn(
+                                        'size-3.5 text-primary/70 transition-transform',
+                                        isCollapsed && '-rotate-90'
+                                      )}
+                                    />
+                                  </motion.div>
+                                  <div className="flex flex-col min-w-0 gap-0.5">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="text-[11px] font-semibold text-foreground truncate">
+                                        {group.head.message}
+                                      </span>
+                                      {group.head.id === activeHeadId && (
+                                        <Badge
+                                          variant="default"
+                                          className="text-[8px] font-bold px-1.5 py-0 h-4 leading-none shrink-0 uppercase"
+                                        >
+                                          Active
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] text-muted-foreground/60 truncate">
+                                      Started from &ldquo;{group.root.message}&rdquo; · {group.members.length} {group.members.length === 1 ? 'version' : 'versions'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <span className="text-[9px] text-muted-foreground/40 shrink-0 font-medium tabular-nums ml-2">
+                                  {isCollapsed ? `+${group.members.length}` : ''}
+                                </span>
+                              </div>
+
+                              {/* Collapsible Steps list */}
+                              <AnimatePresence>
+                                {!isCollapsed && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                                    className="overflow-hidden"
+                                  >
+                                    <SidebarMenu className="p-2 gap-1.5">
+                                      {group.members.map((commit, i) => (
+                                        <CommitListItem
+                                          key={commit.id}
+                                          commit={commit}
+                                          index={i}
+                                          totalCount={group.members.length}
+                                          isSelected={selectedCommitId === commit.id}
+                                          isHead={activeHeadId === commit.id}
+                                          isSelectedForSquash={selectedForSquash.includes(commit.id)}
+                                          hasStarTag={
+                                            commit.tags?.includes('Picture Lock') ||
+                                            commit.tags?.includes("Director's Cut") ||
+                                            commit.tags?.includes('Starred')
+                                          }
+                                          onSelect={(id) => handleSelectCommit(id, 'preview')}
+                                          onToggleSelectForSquash={handleToggleSelectForSquash}
+                                          onToggleStar={handleToggleStar}
+                                        />
+                                      ))}
+                                    </SidebarMenu>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </motion.div>
+                          );
+                        })}
+                      </motion.div>
+                    )}
+                  </SidebarGroupContent>
+
               </SidebarGroup>
             </ScrollArea>
           </SidebarContent>
 
-          <SidebarFooter className="p-3 border-t border-border flex flex-col gap-2">
-            <Button variant="outline" size="sm" onClick={() => refreshAll()} className="w-full">
-              <IconRefresh data-icon="inline-start" />
+          <SidebarFooter className="p-4 border-t border-border/40">
+            <Button variant="outline" size="sm" onClick={() => refreshAll()} className="w-full h-9 text-xs font-medium gap-2 rounded-lg border-border/50 hover:bg-muted/40">
+              <IconRefresh className="size-3.5" />
               Refresh Versions
             </Button>
           </SidebarFooter>

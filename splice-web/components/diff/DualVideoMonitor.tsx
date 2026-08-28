@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { VideoPlayer } from "@/components/ui/video_player";
 import { Commit, TimelineClip, TimelineDiff } from "@/lib/types";
 import { API_URL } from "@/lib/api";
+import { safePlay, safePause } from "@/lib/utils";
+
 import DiffTimelineTrack from "./DiffTimelineTrack";
 
 interface DualVideoMonitorProps {
@@ -29,11 +31,13 @@ interface DualVideoMonitorProps {
   onSetAudioFocus: (mode: "a" | "b" | "both") => void;
   onSeekA: (time: number) => void;
   onSeekB: (time: number) => void;
+  onTimeUpdateA?: () => void;
+  onTimeUpdateB?: () => void;
 }
 
 export default function DualVideoMonitor({
-  baseCommit,
-  targetCommit,
+  baseCommit: _baseCommit,
+  targetCommit: _targetCommit,
   mediaHashA,
   mediaHashB,
   clipsA,
@@ -52,6 +56,8 @@ export default function DualVideoMonitor({
   onSetAudioFocus,
   onSeekA,
   onSeekB,
+  onTimeUpdateA,
+  onTimeUpdateB,
 }: DualVideoMonitorProps) {
   return (
     <div className="flex flex-col gap-4">
@@ -92,19 +98,23 @@ export default function DualVideoMonitor({
                   preload="auto"
                   muted={audioFocus === "b"}
                   suppressHydrationWarning
+                  onTimeUpdate={onTimeUpdateA}
                   onLoadedMetadata={() => {
                     if (videoRefA.current && activeClipA) {
                       videoRefA.current.currentTime = activeClipA.videoTime;
-                      if (isPlaying) videoRefA.current.play().catch(console.warn);
+                      if (isPlaying && timeA < durationA) safePlay(videoRefA.current);
                     }
                   }}
                   onCanPlay={() => {
-                    if (videoRefA.current && isPlaying && videoRefA.current.paused) {
+                    if (videoRefA.current && isPlaying && timeA < durationA && videoRefA.current.paused) {
                       if (activeClipA && Math.abs(videoRefA.current.currentTime - activeClipA.videoTime) > 0.3) {
                         videoRefA.current.currentTime = activeClipA.videoTime;
                       }
-                      videoRefA.current.play().catch(console.warn);
+                      safePlay(videoRefA.current);
                     }
+                  }}
+                  onEnded={() => {
+                    safePause(videoRefA.current);
                   }}
                 />
               </VideoPlayer>
@@ -120,8 +130,15 @@ export default function DualVideoMonitor({
               A
             </div>
 
+            {/* Ended indicator */}
+            {timeA >= durationA && (
+              <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm rounded-md px-2 py-0.5 text-[9px] text-muted-foreground font-medium border border-border/40">
+                Ended
+              </div>
+            )}
+
             {/* Mute indicator */}
-            {audioFocus === "b" && (
+            {audioFocus === "b" && timeA < durationA && (
               <button
                 onClick={() => onSetAudioFocus("a")}
                 className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-amber-300/80 rounded-md px-1.5 py-0.5 z-10 flex items-center gap-1 text-[9px] cursor-pointer transition-colors"
@@ -159,19 +176,23 @@ export default function DualVideoMonitor({
                   preload="auto"
                   muted={audioFocus === "a"}
                   suppressHydrationWarning
+                  onTimeUpdate={onTimeUpdateB}
                   onLoadedMetadata={() => {
                     if (videoRefB.current && activeClipB) {
                       videoRefB.current.currentTime = activeClipB.videoTime;
-                      if (isPlaying) videoRefB.current.play().catch(console.warn);
+                      if (isPlaying && timeB < durationB) safePlay(videoRefB.current);
                     }
                   }}
                   onCanPlay={() => {
-                    if (videoRefB.current && isPlaying && videoRefB.current.paused) {
+                    if (videoRefB.current && isPlaying && timeB < durationB && videoRefB.current.paused) {
                       if (activeClipB && Math.abs(videoRefB.current.currentTime - activeClipB.videoTime) > 0.3) {
                         videoRefB.current.currentTime = activeClipB.videoTime;
                       }
-                      videoRefB.current.play().catch(console.warn);
+                      safePlay(videoRefB.current);
                     }
+                  }}
+                  onEnded={() => {
+                    safePause(videoRefB.current);
                   }}
                 />
               </VideoPlayer>
@@ -183,12 +204,19 @@ export default function DualVideoMonitor({
             )}
 
             {/* Label */}
-            <div className="absolute top-2 left-2 bg-primary/80 backdrop-blur-sm rounded-md px-2 py-0.5 text-[9px] text-white font-medium">
+            <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-sm rounded-md px-2 py-0.5 text-[9px] text-white/80 font-medium">
               B
             </div>
 
+            {/* Ended indicator */}
+            {timeB >= durationB && (
+              <div className="absolute top-2 right-2 bg-primary/20 backdrop-blur-sm rounded-md px-2 py-0.5 text-[9px] text-primary-foreground font-medium border border-primary/40">
+                Ended
+              </div>
+            )}
+
             {/* Mute indicator */}
-            {audioFocus === "a" && (
+            {audioFocus === "a" && timeB < durationB && (
               <button
                 onClick={() => onSetAudioFocus("b")}
                 className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-amber-300/80 rounded-md px-1.5 py-0.5 z-10 flex items-center gap-1 text-[9px] cursor-pointer transition-colors"

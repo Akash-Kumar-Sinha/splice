@@ -1,8 +1,7 @@
 'use client';
 
-import React, { useId, useRef, useEffect, useCallback } from 'react';
-import { MediaPlayButton } from 'media-chrome/react';
-import type { MediaPlayButton as MediaPlayButtonElement } from 'media-chrome';
+import React, { useCallback } from 'react';
+import { IconPlayerPlay, IconPlayerPause } from '@tabler/icons-react';
 
 export interface PlayPauseButtonProps {
   isPlaying: boolean;
@@ -12,6 +11,7 @@ export interface PlayPauseButtonProps {
   showLabel?: boolean;
   disabled?: boolean;
   title?: string;
+  className?: string;
 }
 
 export function PlayPauseButton({
@@ -22,25 +22,10 @@ export function PlayPauseButton({
   showLabel = false,
   disabled = false,
   title,
+  className = '',
 }: PlayPauseButtonProps) {
-  const instanceId = useId().replace(/:/g, '-');
-  const btnRef = useRef<MediaPlayButtonElement | null>(null);
-
   const computedTitle = title || (isPlaying ? pauseLabel : playLabel);
   const currentLabel = isPlaying ? pauseLabel : playLabel;
-
-  // Sync isPlaying state to MediaPlayButton web component
-  useEffect(() => {
-    const el = btnRef.current;
-    if (!el) return;
-
-    el.mediaPaused = !isPlaying;
-    if (!isPlaying) {
-      el.setAttribute('mediapaused', '');
-    } else {
-      el.removeAttribute('mediapaused');
-    }
-  }, [isPlaying]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement | HTMLElement>) => {
@@ -54,20 +39,25 @@ export function PlayPauseButton({
 
   return (
     <div className="inline-flex items-center gap-1.5">
-      <MediaPlayButton
-        ref={btnRef}
+      <button
+        type="button"
         disabled={disabled}
         onClick={handleClick}
         title={computedTitle}
-        mediaController={`none-${instanceId}`}
-        mediaPaused={!isPlaying}
-        className="bg-transparent hover:bg-zinc-900 cursor-pointer  transition-colors"
-      />
+        aria-label={computedTitle}
+        className={`size-8 rounded-lg flex items-center justify-center text-foreground hover:bg-muted/60 active:scale-95 transition-all cursor-pointer select-none disabled:opacity-40 disabled:pointer-events-none ${className}`}
+      >
+        {isPlaying ? (
+          <IconPlayerPause className="size-4" />
+        ) : (
+          <IconPlayerPlay className="size-4 ml-0.5" />
+        )}
+      </button>
 
       {showLabel && (
         <span
           onClick={handleClick}
-          className="text-xs font-medium cursor-pointer select-none"
+          className="text-xs font-medium cursor-pointer select-none text-muted-foreground hover:text-foreground"
         >
           {currentLabel}
         </span>
@@ -77,7 +67,3 @@ export function PlayPauseButton({
 }
 
 export default PlayPauseButton;
-
-
-
-

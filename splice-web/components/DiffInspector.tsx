@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Commit, Timeline, TimelineDiff } from '@/lib/types';
 import { API_URL } from '@/lib/api';
 import { getClipInfoAtTime } from '@/lib/editor-state';
+import { safePlay, safePause } from '@/lib/utils';
 
 import VersionSelector from './diff/VersionSelector';
 import DualVideoMonitor from './diff/DualVideoMonitor';
@@ -153,31 +154,6 @@ export default function DiffInspector({
   const mediaHashB =
     activeClipB?.clip.media_hash || clipsB[0]?.media_hash || timelineB?.media_refs?.[0] || targetCommit?.media_refs?.[0] || null;
 
-  const prevClipAIdRef = useRef<string | null>(null);
-  const prevClipBIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const currentClipAId = activeClipA?.clip.id || null;
-    if (prevClipAIdRef.current !== currentClipAId) {
-      prevClipAIdRef.current = currentClipAId;
-      if (videoRefA.current && activeClipA) {
-        videoRefA.current.currentTime = activeClipA.videoTime;
-        if (isPlaying) videoRefA.current.play().catch(console.warn);
-      }
-    }
-  }, [activeClipA, isPlaying]);
-
-  useEffect(() => {
-    const currentClipBId = activeClipB?.clip.id || null;
-    if (prevClipBIdRef.current !== currentClipBId) {
-      prevClipBIdRef.current = currentClipBId;
-      if (videoRefB.current && activeClipB) {
-        videoRefB.current.currentTime = activeClipB.videoTime;
-        if (isPlaying) videoRefB.current.play().catch(console.warn);
-      }
-    }
-  }, [activeClipB, isPlaying]);
-
   const handleSetAudioMode = useCallback((mode: 'a' | 'b' | 'both') => {
     setAudioFocus(mode);
     if (videoRefA.current) {
@@ -198,73 +174,158 @@ export default function DiffInspector({
   const handleMasterSeek = (time: number) => {
     const clamped = Math.max(0, Math.min(time, maxDuration));
     setMasterTime(clamped);
-    const infoA = getClipInfoAtTime(clipsA, clamped);
-    if (videoRefA.current && infoA) {
-      videoRefA.current.currentTime = infoA.videoTime;
-      if (isPlaying) videoRefA.current.play().catch(console.warn);
+
+    // Sync Video A
+    if (videoRefA.current) {
+      if (clamped >= durationA) {
+        safePause(videoRefA.current);
+        const last = clipsA[clipsA.length - 1];
+        if (last) {
+          videoRefA.current.currentTime = (last.in_point ?? 0) + last.duration;
+        }
+      } else {
+        const infoA = getClipInfoAtTime(clipsA, clamped);
+        if (infoA) {
+          videoRefA.current.currentTime = infoA.videoTime;
+          if (isPlaying) safePlay(videoRefA.current);
+        }
+      }
     }
-    const infoB = getClipInfoAtTime(clipsB, clamped);
-    if (videoRefB.current && infoB) {
-      videoRefB.current.currentTime = infoB.videoTime;
-      if (isPlaying) videoRefB.current.play().catch(console.warn);
+
+    // Sync Video B
+    if (videoRefB.current) {
+      if (clamped >= durationB) {
+        safePause(videoRefB.current);
+        const last = clipsB[clipsB.length - 1];
+        if (last) {
+          videoRefB.current.currentTime = (last.in_point ?? 0) + last.duration;
+        }
+      } else {
+        const infoB = getClipInfoAtTime(clipsB, clamped);
+        if (infoB) {
+          videoRefB.current.currentTime = infoB.videoTime;
+          if (isPlaying) safePlay(videoRefB.current);
+        }
+      }
     }
   };
 
   const toggleMasterPlay = () => {
     if (isPlaying) {
       setIsPlaying(false);
-      videoRefA.current?.pause();
-      videoRefB.current?.pause();
+      safePause(videoRefA.current);
+      safePause(videoRefB.current);
     } else {
-      if (masterTime >= maxDuration - 0.1) handleMasterSeek(0);
-      setIsPlaying(true);
-      const infoA = getClipInfoAtTime(clipsA, masterTime);
-      if (videoRefA.current && infoA) {
-        if (Math.abs(videoRefA.current.currentTime - infoA.videoTime) > 0.3) {
-          videoRefA.current.currentTime = infoA.videoTime;
-        }
-        videoRefA.current.play().catch(console.warn);
+      const startTime = masterTime >= maxDuration - 0.1 ? 0 : masterTime;
+      if (masterTime >= maxDuration - 0.1) {
+        setMasterTime(0);
       }
-      const infoB = getClipInfoAtTime(clipsB, masterTime);
-      if (videoRefB.current && infoB) {
-        if (Math.abs(videoRefB.current.currentTime - infoB.videoTime) > 0.3) {
-          videoRefB.current.currentTime = infoB.videoTime;
+      setIsPlaying(true);
+
+      if (videoRefA.current && startTime < durationA) {
+        const infoA = getClipInfoAtTime(clipsA, startTime);
+        if (infoA) {
+          if (Math.abs(videoRefA.current.currentTime - infoA.videoTime) > 0.2) {
+            videoRefA.current.currentTime = infoA.videoTime;
+          }
+          safePlay(videoRefA.current);
         }
-        videoRefB.current.play().catch(console.warn);
+      }
+      if (videoRefB.current && startTime < durationB) {
+        const infoB = getClipInfoAtTime(clipsB, startTime);
+        if (infoB) {
+          if (Math.abs(videoRefB.current.currentTime - infoB.videoTime) > 0.2) {
+            videoRefB.current.currentTime = infoB.videoTime;
+          }
+          safePlay(videoRefB.current);
+        }
       }
     }
   };
 
+  // Smooth RAF Playhead Clock
   useEffect(() => {
     if (!isPlaying) return;
-    const interval = setInterval(() => {
+    let animationFrameId: number;
+    let lastTime = performance.now();
+
+    const tick = (now: number) => {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+
       setMasterTime((prev) => {
-        const next = prev + 0.05;
+        const next = prev + dt;
         if (next >= maxDuration) {
           setIsPlaying(false);
-          videoRefA.current?.pause();
-          videoRefB.current?.pause();
+          safePause(videoRefA.current);
+          safePause(videoRefB.current);
           return maxDuration;
         }
-        const infoA = getClipInfoAtTime(clipsA, next);
-        if (videoRefA.current && infoA) {
-          if (videoRefA.current.paused && videoRefA.current.readyState >= 2) {
-            videoRefA.current.currentTime = infoA.videoTime;
-            videoRefA.current.play().catch(console.warn);
-          }
+        if (next >= durationA && videoRefA.current && !videoRefA.current.paused) {
+          safePause(videoRefA.current);
         }
-        const infoB = getClipInfoAtTime(clipsB, next);
-        if (videoRefB.current && infoB) {
-          if (videoRefB.current.paused && videoRefB.current.readyState >= 2) {
-            videoRefB.current.currentTime = infoB.videoTime;
-            videoRefB.current.play().catch(console.warn);
-          }
+        if (next >= durationB && videoRefB.current && !videoRefB.current.paused) {
+          safePause(videoRefB.current);
         }
         return next;
       });
-    }, 50);
-    return () => clearInterval(interval);
-  }, [isPlaying, maxDuration, clipsA, clipsB]);
+
+      animationFrameId = requestAnimationFrame(tick);
+    };
+
+    animationFrameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isPlaying, maxDuration, durationA, durationB]);
+
+  // Seamless boundary clip transition for Video A
+  const handleTimeUpdateA = useCallback(() => {
+    const vid = videoRefA.current;
+    if (!vid || !isPlaying) return;
+    const currentVidTime = vid.currentTime;
+    const info = getClipInfoAtTime(clipsA, masterTime);
+    if (!info) return;
+    const currentClip = info.clip;
+    const inPoint = currentClip.in_point ?? 0;
+    const outPoint = currentClip.out_point ?? (inPoint + currentClip.duration);
+
+    if (currentVidTime >= outPoint - 0.04) {
+      const currentIndex = clipsA.findIndex((c) => c.id === currentClip.id);
+      if (currentIndex >= 0 && currentIndex < clipsA.length - 1) {
+        const nextClip = clipsA[currentIndex + 1];
+        if (nextClip.media_hash === currentClip.media_hash) {
+          vid.currentTime = nextClip.in_point ?? 0;
+          safePlay(vid);
+        }
+      } else {
+        safePause(vid);
+      }
+    }
+  }, [clipsA, isPlaying, masterTime]);
+
+  // Seamless boundary clip transition for Video B
+  const handleTimeUpdateB = useCallback(() => {
+    const vid = videoRefB.current;
+    if (!vid || !isPlaying) return;
+    const currentVidTime = vid.currentTime;
+    const info = getClipInfoAtTime(clipsB, masterTime);
+    if (!info) return;
+    const currentClip = info.clip;
+    const inPoint = currentClip.in_point ?? 0;
+    const outPoint = currentClip.out_point ?? (inPoint + currentClip.duration);
+
+    if (currentVidTime >= outPoint - 0.04) {
+      const currentIndex = clipsB.findIndex((c) => c.id === currentClip.id);
+      if (currentIndex >= 0 && currentIndex < clipsB.length - 1) {
+        const nextClip = clipsB[currentIndex + 1];
+        if (nextClip.media_hash === currentClip.media_hash) {
+          vid.currentTime = nextClip.in_point ?? 0;
+          safePlay(vid);
+        }
+      } else {
+        safePause(vid);
+      }
+    }
+  }, [clipsB, isPlaying, masterTime]);
 
   return (
     <div className="max-w-5xl mx-auto flex flex-col gap-5">
@@ -340,21 +401,32 @@ export default function DiffInspector({
         onSetAudioFocus={handleSetAudioMode}
         onSeekA={handleMasterSeek}
         onSeekB={handleMasterSeek}
+        onTimeUpdateA={handleTimeUpdateA}
+        onTimeUpdateB={handleTimeUpdateB}
       />
 
       {/* Sync transport */}
       <div className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">
-            <SkipBackwardButton onSeekStart={() => handleMasterSeek(0)} title="Jump to start" />
+            <SkipBackwardButton
+              onClick={() => handleMasterSeek(Math.max(0, masterTime - 5))}
+              onSeekStart={() => handleMasterSeek(0)}
+              title="Step backward 5s (or double click to jump to start)"
+            />
             <PlayPauseButton
               isPlaying={isPlaying}
               onToggle={toggleMasterPlay}
               playLabel="Play synced"
               pauseLabel="Pause"
             />
-            <SkipForwardButton onSeekEnd={() => handleMasterSeek(maxDuration)} title="Jump to end" />
+            <SkipForwardButton
+              onClick={() => handleMasterSeek(Math.min(maxDuration, masterTime + 5))}
+              onSeekEnd={() => handleMasterSeek(maxDuration)}
+              title="Step forward 5s (or double click to jump to end)"
+            />
           </div>
+
           <TimeDisplay currentTime={masterTime} duration={maxDuration} showDuration />
         </div>
         <TimelineSlider

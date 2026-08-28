@@ -23,7 +23,10 @@ export interface TimelineClip {
   start_time: number;
   duration: number;
   track_index: number;
+  in_point?: number;
+  out_point?: number;
 }
+
 
 export interface TimelineTrack {
   id: string;

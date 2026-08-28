@@ -1,8 +1,6 @@
 'use client';
 
-import React, { useId, useRef, useEffect, useCallback } from 'react';
-import { MediaVolumeRange } from 'media-chrome/react';
-import type { MediaVolumeRange as MediaVolumeRangeElement } from 'media-chrome';
+import React, { useCallback } from 'react';
 
 export interface VolumeRangeProps {
   volume: number; // 0 to 1
@@ -10,6 +8,7 @@ export interface VolumeRangeProps {
   isMuted?: boolean;
   disabled?: boolean;
   showPercentage?: boolean;
+  className?: string;
 }
 
 export function VolumeRange({
@@ -18,80 +17,45 @@ export function VolumeRange({
   isMuted = false,
   disabled = false,
   showPercentage = false,
+  className = '',
 }: VolumeRangeProps) {
-  const instanceId = useId().replace(/:/g, '-');
-  const rangeRef = useRef<MediaVolumeRangeElement | null>(null);
-  const isDraggingRef = useRef(false);
-
   const safeVolume = Math.min(1, Math.max(0, volume || 0));
   const effectiveVolume = isMuted ? 0 : safeVolume;
+  const percent = Math.round(effectiveVolume * 100);
 
-  // Sync state to MediaVolumeRange web component
-  useEffect(() => {
-    const el = rangeRef.current;
-    if (!el) return;
-
-    el.toggleAttribute('disabled', disabled);
-
-    if (!isDraggingRef.current) {
-      el.mediaVolume = effectiveVolume;
-      el.mediaMuted = isMuted;
-      el.setAttribute('mediavolume', String(effectiveVolume));
-      if (isMuted) {
-        el.setAttribute('mediamuted', '');
-      } else {
-        el.removeAttribute('mediamuted');
-      }
-    }
-  }, [effectiveVolume, isMuted, disabled]);
-
-  const handleSeekVolume = useCallback(
-    (e: Event | React.SyntheticEvent<HTMLElement> | CustomEvent<number>) => {
-      e.stopPropagation?.();
-      const customDetail =
-        'detail' in e && typeof (e as CustomEvent<number>).detail === 'number'
-          ? (e as CustomEvent<number>).detail
-          : undefined;
-
-      const target = e.target as (EventTarget & { value?: string; mediaVolume?: number }) | null;
-      const targetVal = target?.value ? parseFloat(target.value) : undefined;
-      const mediaVol = target?.mediaVolume;
-
-      const val = customDetail ?? targetVal ?? mediaVol ?? effectiveVolume;
-
-      if (typeof val === 'number' && !isNaN(val)) {
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = parseFloat(e.target.value);
+      if (!isNaN(val)) {
         onVolumeChange(Math.min(1, Math.max(0, val)));
       }
     },
-    [onVolumeChange, effectiveVolume]
+    [onVolumeChange]
   );
 
-  useEffect(() => {
-    const el = rangeRef.current;
-    if (!el) return;
-
-    const onVolReq = (e: Event) => handleSeekVolume(e as CustomEvent<number>);
-    el.addEventListener('mediavolumerequest', onVolReq);
-    return () => {
-      el.removeEventListener('mediavolumerequest', onVolReq);
-    };
-  }, [handleSeekVolume]);
-
   return (
-    <div className="inline-flex items-center gap-1.5">
-      <MediaVolumeRange
-        ref={rangeRef}
-        onInput={handleSeekVolume}
-        onChange={handleSeekVolume}
-        {...{mediaController: `none-${instanceId}`} as React.ComponentProps<typeof MediaVolumeRange>}
-        mediaVolume={effectiveVolume}
-        mediaMuted={isMuted}
-        className="w-20 cursor-pointer bg-transparent hover:bg-zinc-900 transition-colors"
-      />
+    <div className={`inline-flex items-center gap-1.5 ${className}`}>
+      <div className="group relative w-16 sm:w-20 h-5 flex items-center cursor-pointer">
+        {/* Native Range Input */}
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={effectiveVolume}
+          disabled={disabled}
+          onChange={handleChange}
+          aria-label="Volume control"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          className="w-full h-1.5 bg-muted/60 rounded-full appearance-none cursor-pointer accent-primary border border-border/40 focus:outline-none"
+        />
+      </div>
 
       {showPercentage && (
-        <span className="text-[10px] text-muted-foreground tabular-nums">
-          {Math.round(effectiveVolume * 100)}%
+        <span className="text-[10px] text-muted-foreground tabular-nums w-7 text-right">
+          {percent}%
         </span>
       )}
     </div>
@@ -99,6 +63,3 @@ export function VolumeRange({
 }
 
 export default VolumeRange;
-
-
-

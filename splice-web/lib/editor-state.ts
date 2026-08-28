@@ -148,15 +148,20 @@ export function getClipInfoAtTime(
   for (const clip of clips) {
     if (time >= clip.start_time && time < clip.start_time + clip.duration) {
       const offset = time - clip.start_time;
-      return { clip, offset, videoTime: offset };
+      const inPoint = clip.in_point ?? 0;
+      return { clip, offset, videoTime: inPoint + offset };
     }
   }
   if (clips.length > 0) {
     const last = clips[clips.length - 1];
     if (time >= last.start_time + last.duration) {
-      return { clip: last, offset: last.duration, videoTime: last.duration };
+      const inPoint = last.in_point ?? 0;
+      return { clip: last, offset: last.duration, videoTime: inPoint + last.duration };
     }
-    return { clip: clips[0], offset: 0, videoTime: 0 };
+    const first = clips[0];
+    const inPoint = first.in_point ?? 0;
+    return { clip: first, offset: 0, videoTime: inPoint };
   }
   return null;
 }
+

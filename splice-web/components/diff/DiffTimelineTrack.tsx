@@ -1,14 +1,14 @@
 "use client";
 
 import React from "react";
-import { TimeDisplay, TimelineSlider } from "@/components/video-component";
+import { TimeDisplay } from "@/components/video-component";
 
 import { TimelineClip, TimelineDiff } from "@/lib/types";
 
 import { cn } from "@/lib/utils";
 
 interface DiffTimelineTrackProps {
-  label: string;
+  label?: string;
   clips: TimelineClip[];
   duration: number;
   currentTime: number;
@@ -21,8 +21,9 @@ interface DiffTimelineTrackProps {
 }
 
 export default function DiffTimelineTrack({
-  label,
+  label: _label,
   clips,
+
   duration,
   currentTime,
   activeClipId,

@@ -26,6 +26,9 @@ import {
   recalculatePositions,
 } from '@/lib/editor-state';
 import { useUpload } from '@/hooks/use-upload';
+import { safePlay, safePause } from '@/lib/utils';
+
+
 
 import EditorVideoMonitor from './editor/EditorVideoMonitor';
 import EditorUploadZone from './editor/EditorUploadZone';
@@ -54,13 +57,17 @@ interface TimelineEditorProps {
     }[];
   } | null;
   onCommitSaved?: () => void;
+  onStartNewProject?: () => void;
 }
+
 
 export default function TimelineEditor({
   headCommitId: _headCommitId,
   loadedTimeline,
   onCommitSaved,
+  onStartNewProject,
 }: TimelineEditorProps) {
+
   const [editorState, setEditorState] = useState<EditorState>({
     tracks: [{ id: 'track-0', clips: [] }],
   });
@@ -145,9 +152,9 @@ export default function TimelineEditor({
     const vid = videoRef.current;
     if (!vid) return;
     if (isPlaying) {
-      vid.play().catch((err) => { console.warn('Playback prevented:', err); setIsPlaying(false); });
+      safePlay(vid);
     } else {
-      vid.pause();
+      safePause(vid);
     }
   }, [isPlaying]);
 
@@ -161,14 +168,20 @@ export default function TimelineEditor({
       if (currentIndex >= 0 && currentIndex < primaryTrack.clips.length - 1) {
         const nextClip = primaryTrack.clips[currentIndex + 1];
         setPlayhead(nextClip.position);
-        if (nextClip.media === currentClip.media) { vid.currentTime = nextClip.in_point; vid.play().catch(console.warn); }
+        if (nextClip.media === currentClip.media) {
+          vid.currentTime = nextClip.in_point;
+          safePlay(vid);
+        }
       } else {
-        setIsPlaying(false); setPlayhead(totalDuration); vid.pause();
+        setIsPlaying(false);
+        setPlayhead(totalDuration);
+        safePause(vid);
       }
     } else {
       setPlayhead(currentClip.position + Math.max(0, currentVidTime - currentClip.in_point));
     }
   };
+
 
   const handleSeek = (newTime: number) => {
     const clamped = Math.max(0, Math.min(newTime, totalDuration));
@@ -248,34 +261,90 @@ export default function TimelineEditor({
   };
 
   useEffect(() => {
-    if (loadedTimeline) {
-      setActiveParentId(loadedTimeline.commit_id);
-      setActiveParentName(loadedTimeline.message);
-      if (loadedTimeline.tracks?.[0]?.clips?.length) {
-        const initialClips: Clip[] = loadedTimeline.tracks[0].clips.map((c, idx) => ({
-          id: c.id || `clip-${Date.now()}-${idx}`, media: c.media_hash,
-          in_point: 0, out_point: c.duration, position: c.start_time ?? (idx * 10.0),
-          name: c.name, original_duration: c.duration,
-        }));
-        setEditorState({ tracks: [{ id: 'track-0', clips: recalculatePositions(initialClips) }] });
-      } else if (loadedTimeline.media_refs?.length) {
-        const initialClips: Clip[] = loadedTimeline.media_refs.map((mediaHash, idx) => ({
-          id: `clip-${Date.now()}-${idx}`, media: mediaHash, in_point: 0, out_point: 10.0,
-          position: idx * 10.0, name: `Clip #${idx + 1} (${mediaHash.slice(0, 6)})`, original_duration: 10.0,
-        }));
-        setEditorState({ tracks: [{ id: 'track-0', clips: recalculatePositions(initialClips) }] });
+    if (!loadedTimeline) {
+      setEditorState({ tracks: [{ id: 'track-0', clips: [] }] });
+      setActiveParentId(null);
+      setActiveParentName(null);
+      setCommitMessage('Initial project cut');
+      setPlayhead(0);
+      setIsPlaying(false);
+      return;
+    }
+
+    setActiveParentId(loadedTimeline.commit_id);
+    setActiveParentName(loadedTimeline.message);
+    setCommitMessage(`Edit based on: ${loadedTimeline.message}`);
+    setSaveStatus(`Loaded "${loadedTimeline.message}" (Branch mode)`);
+    setPlayhead(0);
+    setIsPlaying(false);
+
+
+    if (loadedTimeline.tracks && loadedTimeline.tracks.length > 0) {
+      const allTracks = loadedTimeline.tracks.map((t, tIdx) => {
+        const clips: Clip[] = (t.clips || []).map((c: any, cIdx: number) => {
+          const media = c.media_hash || c.media || c.mediaHash || '';
+          const dur = typeof c.duration === 'number' && !isNaN(c.duration) ? c.duration : 10.0;
+          const inPoint = typeof c.in_point === 'number' ? c.in_point : 0;
+          const outPoint = typeof c.out_point === 'number' ? c.out_point : inPoint + dur;
+          const startPos =
+            typeof c.position === 'number'
+              ? c.position
+              : typeof c.start_time === 'number'
+                ? c.start_time
+                : cIdx * dur;
+
+          return {
+            id: c.id || `clip-${Date.now()}-${tIdx}-${cIdx}`,
+            media,
+            in_point: inPoint,
+            out_point: outPoint,
+            position: startPos,
+            name: c.name || `Clip #${cIdx + 1}`,
+            original_duration:
+              typeof c.original_duration === 'number' ? c.original_duration : dur,
+          };
+        });
+
+        return {
+          id: t.id || `track-${tIdx}`,
+          clips: recalculatePositions(clips),
+        };
+      });
+
+      if (allTracks.some((t) => t.clips.length > 0)) {
+        setEditorState({ tracks: allTracks });
+        return;
       }
-      setCommitMessage(`Edit based on: ${loadedTimeline.message}`);
-      setSaveStatus(`Loaded "${loadedTimeline.message}" (Branch mode)`);
+    }
+
+    if (loadedTimeline.media_refs && loadedTimeline.media_refs.length > 0) {
+      const fallbackClips: Clip[] = loadedTimeline.media_refs.map((mediaHash, idx) => ({
+        id: `clip-${Date.now()}-${idx}`,
+        media: mediaHash,
+        in_point: 0,
+        out_point: 10.0,
+        position: idx * 10.0,
+        name: `Clip #${idx + 1} (${mediaHash.slice(0, 6)})`,
+        original_duration: 10.0,
+      }));
+      setEditorState({ tracks: [{ id: 'track-0', clips: recalculatePositions(fallbackClips) }] });
     }
   }, [loadedTimeline]);
 
+
   const handleStartNewProject = () => {
     setEditorState({ tracks: [{ id: 'track-0', clips: [] }] });
-    setActiveParentId(null); setActiveParentName(null);
-    setCommitMessage('Initial project cut'); setPlayhead(0); setIsPlaying(false);
+    setActiveParentId(null);
+    setActiveParentName(null);
+    setCommitMessage('Initial project cut');
+    setPlayhead(0);
+    setIsPlaying(false);
     setSaveStatus('Started new independent project (Root Tree)');
+    if (onStartNewProject) {
+      onStartNewProject();
+    }
   };
+
 
   const handleUnlinkParent = () => {
     setActiveParentId(null); setActiveParentName(null);
@@ -370,7 +439,8 @@ export default function TimelineEditor({
               onLoadedMetadata={() => {
                 if (videoRef.current && activeClipInfo) {
                   videoRef.current.currentTime = activeClipInfo.videoTime;
-                  if (isPlaying) videoRef.current.play().catch(console.warn);
+                  if (isPlaying) safePlay(videoRef.current);
+
                 }
               }}
               onSplitAtPlayhead={handleSplitAtPlayhead}

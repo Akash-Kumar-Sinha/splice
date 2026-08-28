@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   IconGitBranch,
   IconStar,
@@ -69,15 +70,20 @@ export default function CommitTreeNodeItem({
     node.tags?.includes('Starred');
 
   return (
-    <div className="flex flex-col">
-      <div
+    <motion.div
+      className="flex flex-col"
+      initial={{ opacity: 0, x: -5 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.15, ease: 'easeOut' }}
+    >
+      <motion.div
         className={cn(
-          "flex items-center gap-0 py-[3px] pr-1 rounded cursor-pointer transition-colors group/node min-w-0",
+          "flex items-center gap-0 py-[4px] px-1 rounded-lg cursor-pointer group/node min-w-0",
           isSelected && !isDiffMode
-            ? "bg-primary/10"
-            : "hover:bg-muted/30",
-          isDiffMode && diffBaseId === commit.id && "bg-amber-500/10",
-          isDiffMode && diffTargetId === commit.id && "bg-primary/10",
+            ? "bg-primary/8 ring-1 ring-primary/10"
+            : "hover:bg-muted/25",
+          isDiffMode && diffBaseId === commit.id && "bg-amber-500/10 ring-1 ring-amber-500/20",
+          isDiffMode && diffTargetId === commit.id && "bg-primary/8 ring-1 ring-primary/10",
         )}
         onClick={() => {
           if (isDiffMode) {
@@ -88,6 +94,8 @@ export default function CommitTreeNodeItem({
         }}
         onMouseEnter={() => onHover(node.commit.id)}
         onMouseLeave={() => onHover(null)}
+        whileHover={{ x: 2 }}
+        transition={{ duration: 0.1 }}
       >
         {/* Indentation with tree lines */}
         <div className="flex shrink-0" style={{ width: depth * INDENT }}>
@@ -96,7 +104,7 @@ export default function CommitTreeNodeItem({
             return (
               <div key={i} className="relative" style={{ width: INDENT }}>
                 {showLine && (
-                  <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/90" />
+                  <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/60" />
                 )}
               </div>
             );
@@ -107,13 +115,13 @@ export default function CommitTreeNodeItem({
         {depth > 0 && (
           <div className="relative shrink-0" style={{ width: 14 }}>
             {/* Horizontal line from vertical trunk to node */}
-            <div className="absolute top-[11px] left-0 w-2.5 h-px bg-border/90" />
+            <div className="absolute top-[11px] left-0 w-2.5 h-px bg-border/60" />
             {/* Vertical line extending down (for non-last children) */}
             {!isLast && (
-              <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/90" />
+              <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border/60" />
             )}
             {/* Vertical line from parent (top half, connecting to parent's horizontal) */}
-            <div className="absolute left-[10px] top-0 h-[11px] w-px bg-border/90" />
+            <div className="absolute left-[10px] top-0 h-[11px] w-px bg-border/60" />
           </div>
         )}
 
@@ -144,7 +152,7 @@ export default function CommitTreeNodeItem({
         )}
 
         {/* Tiny thumbnail */}
-        <div className="relative size-6 rounded shrink-0 overflow-hidden bg-black/40 ml-1">
+        <div className="relative size-7 rounded-lg shrink-0 overflow-hidden bg-black/30 ml-1 border border-border/30">
           <img
             src={`${API_URL}/commits/${commit.id}/thumbnail`}
             alt=""
@@ -156,60 +164,64 @@ export default function CommitTreeNodeItem({
         </div>
 
         {/* Name + badges */}
-        <div className="flex-1 min-w-0 flex items-center gap-1 ml-1.5">
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 ml-2">
           <span className={cn(
             "text-[11px] truncate leading-tight",
-            isSelected ? "text-foreground font-medium" : "text-foreground/80",
+            isSelected ? "text-foreground font-semibold" : "text-foreground/80 font-medium",
             isHead && "font-semibold"
           )}>
             {commit.message}
           </span>
 
           {isHead && (
-            <Badge variant="default" className="text-[7px] px-1 py-0 h-3 shrink-0 leading-none">
+            <Badge variant="default" className="text-[8px] px-1.5 py-0 h-3.5 shrink-0 leading-none font-bold">
               HEAD
             </Badge>
           )}
           {node.depth > 0 && (
-            <Badge variant="secondary" className="text-[7px] px-1 py-0 h-3 shrink-0 leading-none bg-primary/10 text-primary/70 border-0">
+            <Badge variant="secondary" className="text-[8px] px-1.5 py-0 h-3.5 shrink-0 leading-none bg-primary/10 text-primary/70 border-0">
               b{node.depth}
             </Badge>
           )}
         </div>
 
         {/* Star */}
-        <button
+        <motion.button
           onClick={(e) => {
             e.stopPropagation();
             onToggleStar({ ...commit, tags: node.tags || commit.tags });
           }}
           className={cn(
-            "size-4 shrink-0 flex items-center justify-center rounded transition-colors opacity-0 group-hover/node:opacity-100",
-            hasStarTag ? "opacity-100 text-amber-400" : "text-muted-foreground/40 hover:text-amber-400"
+            "size-5 shrink-0 flex items-center justify-center rounded-md opacity-0 group-hover/node:opacity-100 hover:bg-muted/50",
+            hasStarTag ? "opacity-100 text-amber-400" : "text-muted-foreground/30 hover:text-amber-400"
           )}
+          whileHover={{ scale: 1.2 }}
+          whileTap={{ scale: 0.9 }}
         >
           {hasStarTag ? (
-            <IconStarFilled className="size-2.5" />
+            <IconStarFilled className="size-3" />
           ) : (
-            <IconStar className="size-2.5" />
+            <IconStar className="size-3" />
           )}
-        </button>
+        </motion.button>
 
         {/* Squash checkbox */}
-        <button
+        <motion.button
           onClick={(e) => onToggleSelectForSquash(commit.id, e)}
           className={cn(
-            "size-4 shrink-0 flex items-center justify-center rounded transition-colors opacity-0 group-hover/node:opacity-100",
+            "size-5 shrink-0 flex items-center justify-center rounded-md opacity-0 group-hover/node:opacity-100 hover:bg-muted/50",
             isSelectedForSquash ? "opacity-100 text-primary" : "text-muted-foreground/30 hover:text-muted-foreground"
           )}
+          whileHover={{ scale: 1.2 }}
+          whileTap={{ scale: 0.9 }}
         >
           {isSelectedForSquash ? (
-            <IconSquareCheckFilled className="size-2.5" />
+            <IconSquareCheckFilled className="size-3" />
           ) : (
-            <IconSquare className="size-2.5" />
+            <IconSquare className="size-3" />
           )}
-        </button>
-      </div>
+        </motion.button>
+      </motion.div>
 
       {/* Tags */}
       {node.tags && node.tags.length > 0 && (
@@ -226,43 +238,56 @@ export default function CommitTreeNodeItem({
       )}
 
       {/* Children */}
-      {hasChildren && !isCollapsed && (
-        <div className="flex flex-col">
-          {node.children.map((child, idx) => (
-            <CommitTreeNodeItem
-              key={child.commit.id}
-              node={child}
-              depth={depth + 1}
-              isLast={idx === node.children.length - 1}
-              parentLines={[...parentLines, !isLast]}
-              selectedCommitId={selectedCommitId}
-              activeHeadId={activeHeadId}
-              selectedForSquash={selectedForSquash}
-              collapsedNodeIds={collapsedNodeIds}
-              isDiffMode={isDiffMode}
-              diffBaseId={diffBaseId}
-              diffTargetId={diffTargetId}
-              onHover={onHover}
-              onSelect={onSelect}
-              onToggleCollapse={onToggleCollapse}
-              onToggleSelectForSquash={onToggleSelectForSquash}
-              onToggleStar={onToggleStar}
-              onSetDiffBaseId={onSetDiffBaseId}
-            />
-          ))}
-        </div>
-      )}
+      <AnimatePresence>
+        {hasChildren && !isCollapsed && (
+          <motion.div
+            className="flex flex-col"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+          >
+            {node.children.map((child, idx) => (
+              <CommitTreeNodeItem
+                key={child.commit.id}
+                node={child}
+                depth={depth + 1}
+                isLast={idx === node.children.length - 1}
+                parentLines={[...parentLines, !isLast]}
+                selectedCommitId={selectedCommitId}
+                activeHeadId={activeHeadId}
+                selectedForSquash={selectedForSquash}
+                collapsedNodeIds={collapsedNodeIds}
+                isDiffMode={isDiffMode}
+                diffBaseId={diffBaseId}
+                diffTargetId={diffTargetId}
+                onHover={onHover}
+                onSelect={onSelect}
+                onToggleCollapse={onToggleCollapse}
+                onToggleSelectForSquash={onToggleSelectForSquash}
+                onToggleStar={onToggleStar}
+                onSetDiffBaseId={onSetDiffBaseId}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Collapsed indicator */}
-      {hasChildren && isCollapsed && (
-        <div
-          className="flex items-center gap-1 py-0 text-[8px] text-muted-foreground/40"
-          style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}
-        >
-          <IconGitBranch className="size-2.5 text-primary/40" />
-          <span>+{node.children.length}</span>
-        </div>
-      )}
-    </div>
+      <AnimatePresence>
+        {hasChildren && isCollapsed && (
+          <motion.div
+            className="flex items-center gap-1.5 py-1 text-[9px] text-muted-foreground/50 font-medium"
+            style={{ paddingLeft: depth * INDENT + 14 + 16 + 12 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <IconGitBranch className="size-2.5 text-primary/50" />
+            <span>+{node.children.length} more</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }

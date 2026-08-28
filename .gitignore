@@ -46,3 +46,6 @@ yarn-error.log*
 
 # Agent skills/rules workspace folders
 /.agents
+crates/splice-api/.exports/
+.proxy_cache/
+.exports/

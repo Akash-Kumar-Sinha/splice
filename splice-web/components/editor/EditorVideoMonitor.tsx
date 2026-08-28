@@ -21,7 +21,10 @@ import {
 
 import { API_URL } from "@/lib/api";
 import { Clip } from "@/lib/editor-state";
-import { cn } from "@/lib/utils";
+import { cn, safePlay } from "@/lib/utils";
+
+
+
 
 interface EditorVideoMonitorProps {
   activeClipInfo: { clip: Clip; offset: number; videoTime: number } | null;
@@ -78,9 +81,10 @@ export default function EditorVideoMonitor({
                   if (activeClipInfo) {
                     videoRef.current.currentTime = activeClipInfo.videoTime;
                   }
-                  videoRef.current.play().catch(console.warn);
+                  safePlay(videoRef.current);
                 }
               }}
+
             />
 
             <div
@@ -98,12 +102,6 @@ export default function EditorVideoMonitor({
               </div>
             </div>
 
-            <div className="absolute top-3 left-3 bg-background/85 backdrop-blur-md border border-border/80 rounded-lg px-2.5 py-1 text-[10px] text-foreground pointer-events-none z-10 flex items-center gap-1.5 shadow-sm">
-              <span className="size-1.5 rounded-full bg-primary animate-pulse" />
-              <span className="truncate max-w-[180px]">
-                {activeClipInfo.clip.name} · {activeClipInfo.offset.toFixed(1)}s
-              </span>
-            </div>
           </>
         ) : (
           <div className="text-muted-foreground text-xs text-center p-8 flex flex-col items-center gap-3">
@@ -148,8 +146,9 @@ export default function EditorVideoMonitor({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 px-0.5 py-2">
             <SkipBackwardButton
+              onClick={() => onSeek(Math.max(0, playhead - 5))}
               onSeekStart={() => onSeek(0)}
-              title="Jump to Start"
+              title="Step backward 5s (or double click to jump to start)"
             />
 
             <PlayPauseButton
@@ -160,10 +159,12 @@ export default function EditorVideoMonitor({
             />
 
             <SkipForwardButton
+              onClick={() => onSeek(Math.min(totalDuration, playhead + 5))}
               onSeekEnd={() => onSeek(totalDuration)}
-              title="Jump to End"
+              title="Step forward 5s (or double click to jump to end)"
             />
           </div>
+
 
           <div className="flex items-center gap-1.5">
             <Button

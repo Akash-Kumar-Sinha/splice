@@ -1,29 +1,47 @@
 'use client';
 
-import React, { useId, useRef, useCallback } from 'react';
-import { MediaSeekForwardButton } from 'media-chrome/react';
-import type { MediaSeekForwardButton as MediaSeekForwardButtonElement } from 'media-chrome';
+import React, { useCallback } from 'react';
+import { IconPlayerSkipForward } from '@tabler/icons-react';
 
 export interface SkipForwardButtonProps {
-  onSeekEnd: () => void;
+  onSeekEnd?: () => void;
+  onSeekForward?: (offset?: number) => void;
+  onClick?: () => void;
   title?: string;
   disabled?: boolean;
   seekOffset?: number;
+  className?: string;
 }
 
 export function SkipForwardButton({
   onSeekEnd,
-  title = 'Jump to End',
+  onSeekForward,
+  onClick,
+  title = 'Step forward 5s (or jump to end)',
   disabled = false,
   seekOffset = 5,
+  className = '',
 }: SkipForwardButtonProps) {
-  const instanceId = useId().replace(/:/g, '-');
-  const btnRef = useRef<MediaSeekForwardButtonElement | null>(null);
-
   const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement | HTMLElement>) => {
+    (e: React.MouseEvent<HTMLButtonElement>) => {
       e.stopPropagation();
-      if (!disabled) {
+      if (disabled) return;
+      if (onClick) {
+        onClick();
+      } else if (onSeekForward) {
+        onSeekForward(seekOffset);
+      } else if (onSeekEnd) {
+        onSeekEnd();
+      }
+    },
+    [disabled, onClick, onSeekForward, onSeekEnd, seekOffset]
+  );
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation();
+      if (disabled) return;
+      if (onSeekEnd) {
         onSeekEnd();
       }
     },
@@ -31,21 +49,18 @@ export function SkipForwardButton({
   );
 
   return (
-    <MediaSeekForwardButton
-      ref={btnRef}
+    <button
+      type="button"
       disabled={disabled}
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
       title={title}
-      mediaController={`none-${instanceId}`}
-      seekOffset={seekOffset}
-      className="bg-transparent hover:bg-zinc-900 cursor-pointer  transition-colors"
-    />
+      aria-label={title}
+      className={`size-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 active:scale-95 transition-all cursor-pointer select-none disabled:opacity-40 disabled:pointer-events-none ${className}`}
+    >
+      <IconPlayerSkipForward className="size-4" />
+    </button>
   );
-
 }
 
 export default SkipForwardButton;
-
-
-
-

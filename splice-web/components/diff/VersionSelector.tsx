@@ -84,7 +84,7 @@ export default function VersionSelector({
         >
           {label}
         </span>
-        <Badge variant={badgeVariant} className="text-[9px] h-3.5 px-1 font-mono">
+        <Badge variant={badgeVariant} className="text-[9px] h-3.5 px-1 flex items-center">
           {commitId ? commitId.slice(0, 7) : '—'}
         </Badge>
       </div>
